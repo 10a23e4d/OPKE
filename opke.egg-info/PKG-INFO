@@ -1,9 +1,0 @@
-Metadata-Version: 2.4
-Name: opke
-Version: 2.0.0
-Summary: Offline Paper-Key Encryptor v2.0 - Ultra-high security offline paper cold storage key encryptor
-Requires-Python: >=3.10
-Description-Content-Type: text/markdown
-Requires-Dist: argon2-cffi>=23.1.0
-Requires-Dist: cryptography>=42.0.0
-Requires-Dist: qrcode[pil]>=7.4.2
