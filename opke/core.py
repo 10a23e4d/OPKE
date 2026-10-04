@@ -5,18 +5,30 @@ Layer 1: ChaCha20-Poly1305
 Layer 2: AES-256-GCM
 """
 
+import hmac
 import os
 from typing import Tuple, Union
-import argon2.low_level
+from argon2.exceptions import HashingError
+from argon2.low_level import ARGON2_VERSION, Type, ffi, lib
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 
-from opke.security import zero_memory
+from opke.security import zero_memory, MAX_SECRET_BYTES, MAX_PASSPHRASE_BYTES
 
 # Default KDF parameters (Offline Paper-Key Cold Storage profile)
 DEFAULT_M_KIB = 8388608  # 8 GiB
 DEFAULT_T = 64           # 64 iterations
 DEFAULT_P = 8            # 8 parallel threads
+
+# Validation limits
+MAX_M_KIB = 67108864     # 64 GiB max memory limit
+MIN_M_KIB = 8            # Argon2 minimum
+MAX_T = 1000             # 1000 iterations max limit
+MIN_T = 1
+MAX_P = 256              # 256 threads max
+MIN_P = 1
+MIN_CIPHERTEXT_BYTES = 17 # 1-byte plaintext + 16-byte Poly1305 tag
+MAX_CIPHERTEXT_BYTES = MAX_SECRET_BYTES + 16  # 64 MiB plaintext + 16-byte Poly1305 tag
 
 # Cryptographic sizes in bytes
 SALT_LEN = 16
@@ -54,6 +66,9 @@ def derive_key_and_split(
 ) -> Tuple[bytearray, bytearray]:
     """Derives a 64-byte key using Argon2id (v0x13) and splits into two 32-byte keys.
 
+    Uses zero-copy CFFI buffer access to ensure no immutable copies of the passphrase
+    are retained in Python heap memory.
+
     Args:
         passphrase: User passphrase (bytes or bytearray).
         salt: Cryptographic random salt (16 bytes).
@@ -64,37 +79,73 @@ def derive_key_and_split(
     Returns:
         Tuple[bytearray, bytearray]: (Key_ChaCha, Key_AES), each 32 bytes.
     """
-    if len(salt) != SALT_LEN:
-        raise ValueError(f"Salt must be exactly {SALT_LEN} bytes, got {len(salt)}")
-    if m_kib < 8:
-        raise ValueError(f"Memory cost too low: {m_kib} KiB")
-    if t < 1:
-        raise ValueError(f"Time cost must be at least 1, got {t}")
-    if p < 1:
-        raise ValueError(f"Parallelism must be at least 1, got {p}")
+    if not isinstance(passphrase, (bytes, bytearray)):
+        raise TypeError(f"Passphrase must be bytes or bytearray, got {type(passphrase).__name__}")
+    if len(passphrase) == 0:
+        raise ValueError("Passphrase cannot be empty.")
+    if len(passphrase) > MAX_PASSPHRASE_BYTES:
+        raise ValueError(f"Passphrase exceeds maximum allowed length ({MAX_PASSPHRASE_BYTES} bytes).")
+    if not isinstance(salt, (bytes, bytearray)) or len(salt) != SALT_LEN:
+        raise ValueError(f"Salt must be exactly {SALT_LEN} bytes, got {len(salt) if hasattr(salt, '__len__') else type(salt).__name__}")
+    if type(p) is not int or p < MIN_P:
+        raise ValueError(f"Parallelism must be at least {MIN_P}, got {p}")
+    if p > MAX_P:
+        raise ValueError(f"Parallelism exceeds maximum limit ({MAX_P}): {p}")
+    if type(t) is not int or t < MIN_T:
+        raise ValueError(f"Time cost must be at least {MIN_T}, got {t}")
+    if t > MAX_T:
+        raise ValueError(f"Time cost exceeds maximum limit ({MAX_T}): {t}")
+    if type(m_kib) is not int or m_kib < MIN_M_KIB:
+        raise ValueError(f"Memory cost too low: {m_kib} KiB (minimum {MIN_M_KIB} KiB)")
+    if m_kib > MAX_M_KIB:
+        raise ValueError(f"Memory cost exceeds maximum allowed ({MAX_M_KIB} KiB): {m_kib} KiB")
+    if m_kib < 8 * p:
+        raise ValueError(f"Memory cost too low: {m_kib} KiB (Argon2 requires m_kib >= 8 * p = {8 * p} KiB)")
 
-    # Derive raw 64-byte key using Argon2id v0x13
-    raw_derived = argon2.low_level.hash_secret_raw(
-        secret=bytes(passphrase),
-        salt=salt,
-        time_cost=t,
-        memory_cost=m_kib,
-        parallelism=p,
-        hash_len=KEY_LEN,
-        type=argon2.low_level.Type.ID,
-        version=0x13,
-    )
+    # Prepare CFFI buffers
+    out_buf = ffi.new("uint8_t[]", KEY_LEN)
+    salt_buf = ffi.new("uint8_t[]", salt)
+    key_chacha = None
+    key_aes = None
+    try:
+        try:
+            # Zero-copy buffer pointer to passphrase (avoids creating immutable bytes on Python heap)
+            c_pass = ffi.from_buffer("uint8_t[]", passphrase)
 
-    key_buf = bytearray(raw_derived)
-    del raw_derived
+            rv = lib.argon2_hash(
+                t,
+                m_kib,
+                p,
+                c_pass,
+                len(passphrase),
+                salt_buf,
+                len(salt),
+                out_buf,
+                KEY_LEN,
+                ffi.NULL,
+                0,
+                Type.ID.value,
+                ARGON2_VERSION,
+            )
+            if rv != lib.ARGON2_OK:
+                err_msg = ffi.string(lib.argon2_error_message(rv)).decode("utf-8", errors="replace")
+                raise CryptoError(f"Argon2id key derivation failed (error code {rv}: {err_msg})")
 
-    # Split into Key_ChaCha (0..32) and Key_AES (32..64)
-    key_chacha = bytearray(key_buf[:SUBKEY_LEN])
-    key_aes = bytearray(key_buf[SUBKEY_LEN:])
+            # Zero-copy directly from CFFI buffer into subkey bytearrays
+            key_chacha = bytearray(ffi.buffer(out_buf, SUBKEY_LEN))
+            key_aes = bytearray(ffi.buffer(out_buf + SUBKEY_LEN, SUBKEY_LEN))
+        except BaseException:
+            zero_memory(key_chacha)
+            zero_memory(key_aes)
+            raise
+    finally:
+        # Erase raw derived key from CFFI buffer
+        ffi.memmove(out_buf, b"\x00" * KEY_LEN, KEY_LEN)
 
-    # Clean up master derived buffer
-    zero_memory(key_buf)
-    del key_buf
+    if hmac.compare_digest(key_chacha, key_aes):
+        zero_memory(key_chacha)
+        zero_memory(key_aes)
+        raise CryptoError("Argon2id derived degenerate identical subkeys.")
 
     return key_chacha, key_aes
 
@@ -129,36 +180,53 @@ def encrypt_cascade(
         Tuple[bytes, bytes, bytes, bytes]:
             (final_ciphertext, tag_aes, nonce_chacha, nonce_aes)
     """
-    if len(key_chacha) != SUBKEY_LEN:
-        raise ValueError(f"Key_ChaCha must be {SUBKEY_LEN} bytes, got {len(key_chacha)}")
-    if len(key_aes) != SUBKEY_LEN:
-        raise ValueError(f"Key_AES must be {SUBKEY_LEN} bytes, got {len(key_aes)}")
+    if not isinstance(plaintext, (bytes, bytearray)):
+        raise TypeError(f"Plaintext must be bytes or bytearray, got {type(plaintext).__name__}")
+    if len(plaintext) == 0:
+        raise ValueError("Plaintext cannot be empty.")
+    if len(plaintext) > MAX_SECRET_BYTES:
+        raise ValueError(f"Plaintext exceeds maximum allowed size ({MAX_SECRET_BYTES} bytes).")
+    if not isinstance(key_chacha, (bytes, bytearray)) or len(key_chacha) != SUBKEY_LEN:
+        raise ValueError(f"Key_ChaCha must be {SUBKEY_LEN} bytes, got {len(key_chacha) if hasattr(key_chacha, '__len__') else type(key_chacha).__name__}")
+    if not isinstance(key_aes, (bytes, bytearray)) or len(key_aes) != SUBKEY_LEN:
+        raise ValueError(f"Key_AES must be {SUBKEY_LEN} bytes, got {len(key_aes) if hasattr(key_aes, '__len__') else type(key_aes).__name__}")
+    if hmac.compare_digest(key_chacha, key_aes):
+        raise ValueError("Key_ChaCha and Key_AES must be independent and distinct.")
 
     if nonce_chacha is None:
         nonce_chacha = os.urandom(NONCE_LEN)
-    elif len(nonce_chacha) != NONCE_LEN:
-        raise ValueError(f"Nonce_ChaCha must be {NONCE_LEN} bytes, got {len(nonce_chacha)}")
+    elif not isinstance(nonce_chacha, (bytes, bytearray)) or len(nonce_chacha) != NONCE_LEN:
+        raise ValueError(f"Nonce_ChaCha must be {NONCE_LEN} bytes, got {len(nonce_chacha) if hasattr(nonce_chacha, '__len__') else type(nonce_chacha).__name__}")
 
     if nonce_aes is None:
-        nonce_aes = os.urandom(NONCE_LEN)
-    elif len(nonce_aes) != NONCE_LEN:
-        raise ValueError(f"Nonce_AES must be {NONCE_LEN} bytes, got {len(nonce_aes)}")
+        while True:
+            nonce_aes = os.urandom(NONCE_LEN)
+            if not hmac.compare_digest(nonce_chacha, nonce_aes):
+                break
+    elif not isinstance(nonce_aes, (bytes, bytearray)) or len(nonce_aes) != NONCE_LEN:
+        raise ValueError(f"Nonce_AES must be {NONCE_LEN} bytes, got {len(nonce_aes) if hasattr(nonce_aes, '__len__') else type(nonce_aes).__name__}")
+
+    if hmac.compare_digest(nonce_chacha, nonce_aes):
+        raise ValueError("Nonce_ChaCha and Nonce_AES must be distinct.")
 
     # Layer 1: ChaCha20-Poly1305
-    # PyCA ChaCha20Poly1305 encrypt returns: intermediate_ciphertext + 16B tag
-    chacha = ChaCha20Poly1305(bytes(key_chacha))
-    l1_output = chacha.encrypt(nonce_chacha, bytes(plaintext), None)
+    chacha = ChaCha20Poly1305(key_chacha)
+    aesgcm = AESGCM(key_aes)
+    l1_buf = bytearray(len(plaintext) + TAG_LEN)
+    l2_buf = bytearray(len(l1_buf) + TAG_LEN)
+    try:
+        chacha.encrypt_into(nonce_chacha, plaintext, None, l1_buf)
+        aesgcm.encrypt_into(nonce_aes, l1_buf, None, l2_buf)
 
-    # Layer 2: AES-256-GCM
-    # PyCA AESGCM encrypt returns: final_ciphertext + 16B tag
-    aesgcm = AESGCM(bytes(key_aes))
-    l2_output = aesgcm.encrypt(nonce_aes, l1_output, None)
+        # Separate final_ciphertext (data) and tag_aes
+        final_ciphertext = bytes(memoryview(l2_buf)[:-TAG_LEN])
+        tag_aes = bytes(memoryview(l2_buf)[-TAG_LEN:])
 
-    # Separate final_ciphertext (data) and tag_aes
-    final_ciphertext = l2_output[:-TAG_LEN]
-    tag_aes = l2_output[-TAG_LEN:]
-
-    return final_ciphertext, tag_aes, nonce_chacha, nonce_aes
+        return final_ciphertext, tag_aes, nonce_chacha, nonce_aes
+    finally:
+        zero_memory(l1_buf)
+        zero_memory(l2_buf)
+        del chacha, aesgcm
 
 
 def decrypt_cascade(
@@ -168,7 +236,7 @@ def decrypt_cascade(
     nonce_chacha: bytes,
     key_chacha: Union[bytes, bytearray],
     key_aes: Union[bytes, bytearray],
-) -> bytes:
+) -> bytearray:
     """Decrypts and authenticates ciphertext through the inverse dual-layer cascade.
 
     Process:
@@ -190,39 +258,75 @@ def decrypt_cascade(
         key_aes: 32-byte key for AES-256-GCM.
 
     Returns:
-        bytes: Decrypted original plaintext.
+        bytearray: Decrypted original plaintext as a mutable buffer that can be zeroed.
 
     Raises:
         AuthenticationError: If tag verification fails or data was tampered with.
         ValueError: If key, nonce, or tag lengths are invalid.
     """
-    if len(key_chacha) != SUBKEY_LEN:
-        raise ValueError(f"Key_ChaCha must be {SUBKEY_LEN} bytes, got {len(key_chacha)}")
-    if len(key_aes) != SUBKEY_LEN:
-        raise ValueError(f"Key_AES must be {SUBKEY_LEN} bytes, got {len(key_aes)}")
-    if len(tag_aes) != TAG_LEN:
-        raise ValueError(f"Tag_AES must be {TAG_LEN} bytes, got {len(tag_aes)}")
-    if len(nonce_aes) != NONCE_LEN:
-        raise ValueError(f"Nonce_AES must be {NONCE_LEN} bytes, got {len(nonce_aes)}")
-    if len(nonce_chacha) != NONCE_LEN:
-        raise ValueError(f"Nonce_ChaCha must be {NONCE_LEN} bytes, got {len(nonce_chacha)}")
+    if not isinstance(final_ciphertext, (bytes, bytearray)):
+        raise TypeError(f"Ciphertext must be bytes or bytearray, got {type(final_ciphertext).__name__}")
+    if len(final_ciphertext) < MIN_CIPHERTEXT_BYTES:
+        raise ValueError(f"Ciphertext too short: must be at least {MIN_CIPHERTEXT_BYTES} bytes, got {len(final_ciphertext)}")
+    if len(final_ciphertext) > MAX_CIPHERTEXT_BYTES:
+        raise ValueError(f"Ciphertext exceeds maximum allowed size ({MAX_CIPHERTEXT_BYTES} bytes).")
+    if not isinstance(key_chacha, (bytes, bytearray)) or len(key_chacha) != SUBKEY_LEN:
+        raise ValueError(f"Key_ChaCha must be {SUBKEY_LEN} bytes, got {len(key_chacha) if hasattr(key_chacha, '__len__') else type(key_chacha).__name__}")
+    if not isinstance(key_aes, (bytes, bytearray)) or len(key_aes) != SUBKEY_LEN:
+        raise ValueError(f"Key_AES must be {SUBKEY_LEN} bytes, got {len(key_aes) if hasattr(key_aes, '__len__') else type(key_aes).__name__}")
+    if not isinstance(tag_aes, (bytes, bytearray)) or len(tag_aes) != TAG_LEN:
+        raise ValueError(f"Tag_AES must be {TAG_LEN} bytes, got {len(tag_aes) if hasattr(tag_aes, '__len__') else type(tag_aes).__name__}")
+    if not isinstance(nonce_aes, (bytes, bytearray)) or len(nonce_aes) != NONCE_LEN:
+        raise ValueError(f"Nonce_AES must be {NONCE_LEN} bytes, got {len(nonce_aes) if hasattr(nonce_aes, '__len__') else type(nonce_aes).__name__}")
+    if not isinstance(nonce_chacha, (bytes, bytearray)) or len(nonce_chacha) != NONCE_LEN:
+        raise ValueError(f"Nonce_ChaCha must be {NONCE_LEN} bytes, got {len(nonce_chacha) if hasattr(nonce_chacha, '__len__') else type(nonce_chacha).__name__}")
+    if hmac.compare_digest(nonce_chacha, nonce_aes):
+        raise ValueError("Nonce_ChaCha and Nonce_AES must be distinct.")
+    if hmac.compare_digest(key_chacha, key_aes):
+        raise ValueError("Key_ChaCha and Key_AES must be independent and distinct.")
 
     # Layer 2 Decrypt & Verify (AES-256-GCM)
+    l1_blob_len = len(final_ciphertext)
+    l1_blob = bytearray(l1_blob_len)
+    plaintext = None
+    aesgcm = None
+    chacha = None
     try:
-        aesgcm = AESGCM(bytes(key_aes))
-        l1_blob = aesgcm.decrypt(nonce_aes, final_ciphertext + tag_aes, None)
-    except InvalidTag:
-        raise AuthenticationError("Decryption failed: Layer 2 (AES-GCM) authentication tag verification failed. Invalid passphrase or corrupted data.")
-    except Exception as e:
-        raise CryptoError(f"Layer 2 decryption failed: {e}")
+        try:
+            aesgcm = AESGCM(key_aes)
+            aesgcm.decrypt_into(nonce_aes, bytes(final_ciphertext) + bytes(tag_aes), None, l1_blob)
+        except InvalidTag:
+            raise AuthenticationError("Decryption failed: Layer 2 (AES-GCM) authentication tag verification failed. Invalid passphrase or corrupted data.")
+        except Exception as e:
+            raise CryptoError(f"Layer 2 decryption failed: {e}")
 
-    # Layer 1 Decrypt & Verify (ChaCha20-Poly1305)
-    try:
-        chacha = ChaCha20Poly1305(bytes(key_chacha))
-        plaintext = chacha.decrypt(nonce_chacha, l1_blob, None)
-    except InvalidTag:
-        raise AuthenticationError("Decryption failed: Layer 1 (ChaCha20-Poly1305) authentication tag verification failed. Invalid passphrase or corrupted data.")
-    except Exception as e:
-        raise CryptoError(f"Layer 1 decryption failed: {e}")
+        # Layer 1 Decrypt & Verify (ChaCha20-Poly1305)
+        if len(l1_blob) < MIN_CIPHERTEXT_BYTES:
+            raise AuthenticationError("Decryption failed: Layer 1 blob truncated.")
 
-    return plaintext
+        plaintext_len = len(l1_blob) - TAG_LEN
+        plaintext = bytearray(plaintext_len)
+        try:
+            chacha = ChaCha20Poly1305(key_chacha)
+            chacha.decrypt_into(nonce_chacha, l1_blob, None, plaintext)
+        except InvalidTag:
+            zero_memory(plaintext)
+            plaintext = None
+            raise AuthenticationError("Decryption failed: Layer 1 (ChaCha20-Poly1305) authentication tag verification failed. Invalid passphrase or corrupted data.")
+        except Exception as e:
+            zero_memory(plaintext)
+            plaintext = None
+            raise CryptoError(f"Layer 1 decryption failed: {e}")
+
+        if len(plaintext) == 0:
+            zero_memory(plaintext)
+            plaintext = None
+            raise AuthenticationError("Decryption failed: Plaintext is empty.")
+
+        return plaintext
+    except BaseException:
+        zero_memory(plaintext)
+        raise
+    finally:
+        zero_memory(l1_blob)
+        del aesgcm, chacha, l1_blob
