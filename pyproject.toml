@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opke"
+version = "2.0.0"
+description = "Offline Paper-Key Encryptor v2.0 - Ultra-high security offline paper cold storage key encryptor"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "argon2-cffi>=23.1.0",
+    "cryptography>=42.0.0",
+    "qrcode[pil]>=7.4.2",
+]
+
+[project.scripts]
+opke = "opke.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
