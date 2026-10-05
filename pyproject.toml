@@ -12,11 +12,20 @@ dependencies = [
     "argon2-cffi>=23.1.0",
     "cryptography>=42.0.0",
     "qrcode[pil]>=7.4.2",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
 ]
+
 
 [project.scripts]
 opke = "opke.cli:main"
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["opke*"]
+exclude = ["output*", "tests*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+

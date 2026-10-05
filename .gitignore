@@ -6,3 +6,7 @@ __pycache__/
 *.png
 *.svg
 paper_key.txt
+output/
+web/
+run_web.py
+tests/test_web.py
