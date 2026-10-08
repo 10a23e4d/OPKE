@@ -1,0 +1,44 @@
+[package]
+name = "opke"
+version = "3.0.0"
+edition = "2021"
+authors = ["OPKE Contributors"]
+description = "Offline Paper-Key Encryptor (OPKE) v3.0"
+
+[lib]
+name = "opke"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opke"
+path = "src/main.rs"
+
+[dependencies]
+# Cryptography
+argon2 = { version = "0.5", features = ["std", "zeroize"] }
+chacha20poly1305 = { version = "0.10", features = ["alloc"] }
+aes-gcm = { version = "0.10", features = ["aes"] }
+rand = "0.8"
+subtle = "2.6"
+
+# Security & Memory Zeroization
+zeroize = { version = "1.8", features = ["derive", "alloc"] }
+rpassword = "7.3"
+
+# Serialization & Envelopes
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+base64 = "0.22"
+
+# QR Code Generation
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# CLI & Terminal
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# System info (RAM inspection to prevent DoS / OOM)
+sysinfo = "0.33"
+
+[dev-dependencies]
+tempfile = "3.17"

@@ -1,12 +1,27 @@
-.venv/
-__pycache__/
-*.pyc
-*.egg-info/
-.pytest_cache/
+# Rust build artifacts
+target/
+**/target/
+**/*.rs.bk
+
+# Prebuilt binaries (allow bin/opke.exe)
+!bin/
+!bin/opke.exe
+
+# Output and temporary files
 *.png
 *.svg
 paper_key.txt
+test_*.txt
 output/
-web/
-run_web.py
-tests/test_web.py
+
+# Python remnants
+__pycache__/
+**/__pycache__/
+*.pyc
+**/*.pyc
+*.egg-info/
+**/*.egg-info/
+.venv/
+**/.venv/
+.pytest_cache/
+**/.pytest_cache/
