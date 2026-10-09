@@ -1,15 +1,10 @@
 # cargo-deny configuration for OPKE
 
 [advisories]
-version = 2
-vulnerability = "deny"
 unmaintained = "none"
 yanked = "warn"
-notice = "warn"
 
 [licenses]
-version = 2
-unlicensed = "deny"
 allow = [
     "MIT",
     "Apache-2.0",
