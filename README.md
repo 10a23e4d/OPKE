@@ -1,57 +1,66 @@
-# OPKE v3.0 (Offline Paper-Key Encryptor)
+**English** | [日本語](README_ja.md)
 
-**OPKE (Offline Paper-Key Encryptor) v3.0** は、VeraCryptの復号パスワードやパスワードマネージャー（1Password、Bitwarden等）のEmergency Kitなどの機密性の極めて高い平文データを、日常記憶しているパスワードから導出した暗号鍵を用いて**紙面印刷用のBase64（PEM形式）およびQRコード**として安全に出力・復元するオフライン暗号化ツールです。
+# OPKE v3.0.1 (Offline Paper-Key Encryptor)
 
-v3.0では**Rust言語による完全ネイティブ実装（`opke-rs`）**となり、単一実行可能バイナリ（`.exe`）での配布、コンパイラ保証された完全なメモリ消去（`zeroize`）、ハードウェアアクセラレーション（AES-NI）、および**エクスプローラーからのダブルクリックでそのまま使える対話型ウィザード**に対応しました。
+**OPKE (Offline Paper-Key Encryptor) v3.0.1** is a military-grade, standalone offline encryption tool designed to safeguard ultra-sensitive secrets—such as VeraCrypt master passwords, password manager emergency recovery kits (1Password, Bitwarden), and root seed keys—by converting them into **cold-storage paper keys (PEM format)** and **high-density QR codes** backed by memory-hard key derivation.
+
+Starting with v3.0, OPKE is completely natively implemented in **Rust (`opke-rs`)** as a zero-dependency standalone binary (`.exe`), featuring compiler-guaranteed memory zeroization (`zeroize`), kernel physical memory locking (`VirtualLock` on Windows / `mlock` on Unix to prevent swapping secrets to `pagefile.sys`), hardware-accelerated AES-NI, and an **interactive guided wizard for seamless double-click execution from Windows Explorer**.
+
+In v3.0.1, comprehensive architectural remediations for all 74 security audit findings have been integrated (cryptographic AAD envelope binding, Unicode NFC normalization, atomic creation, mandatory file locking, and process memory scrubbing).
 
 ---
 
-## 1. プロジェクト構成
+## 1. Project Layout
 
 ```text
 OPKE/
-├── bin/
-│   └── opke.exe          # [配布用] ビルド済み単一バイナリ (Windows x86_64)
-├── opke-rs/              # OPKE v3.0 Rust ソースコード
+├── opke-rs/              # OPKE v3.0.1 Rust source code
 │   ├── src/
-│   │   ├── core/         # 暗号コア (Argon2id + ChaCha20-Poly1305 + AES-256-GCM)
-│   │   ├── envelope/     # エンベロープ管理 (v2/v3対応, PEM形式, Base64)
-│   │   ├── security/     # メモリ保護 (Zeroize), 0600セキュアファイルI/O, パスワード非表示入力
-│   │   ├── qr/           # QRコード生成 (PNG, SVG, 端末ANSIハーフブロック)
-│   │   └── cli/          # CLIサブコマンド & ダブルクリック対応対話ウィザード
-│   ├── tests/            # 単一・統合テスト
+│   │   ├── core/         # Cryptographic engine (Argon2id + ChaCha20-Poly1305 + AES-256-GCM + AAD)
+│   │   ├── envelope/     # Envelope format (v2/v3 support, PEM encoding, Base64 pre-bounds)
+│   │   ├── security/     # OS security (VirtualLock, Zeroize, ACLs, hidden prompt, PEB scrub)
+│   │   ├── qr/           # QR code generation (PNG, SVG, high-contrast ANSI terminal rendering)
+│   │   └── cli/          # CLI subcommands & double-click interactive wizard
+│   ├── tests/            # Test suites: unit, crypto, and security regression (35 tests total)
 │   └── Cargo.toml
-└── README.md
+├── LICENSE-MIT           # MIT License
+├── LICENSE-APACHE        # Apache License 2.0
+├── README.md             # English documentation (this file)
+└── README_ja.md          # Japanese documentation (日本語版)
 ```
 
 ---
 
-## 2. 暗号仕様 (Cryptographic Architecture)
+## 2. Cryptographic Architecture
 
-### 2.1 鍵導出関数 (KDF)
-- **アルゴリズム**: **Argon2id** (Version 0x13)
-- **ソルト**: 16バイト CSPRNG乱数
-- **メモリコスト ($m$)**: `8,388,608 KiB` (8 GiB)
-- **時間コスト ($t$)**: `64` イテレーション
-- **並列度 ($p$)**: `8` スレッド
-- **導出鍵長**: `64` バイト (512 ビット)
-  - `Key_ChaCha`: 前半32バイト
-  - `Key_AES`: 後半32バイト
+### 2.1 Key Derivation Function (KDF)
+- **Algorithm**: **Argon2id** (Version 0x13)
+- **Normalization**: Passphrases are normalized to Unicode NFC prior to KDF hashing, ensuring cross-platform decryption parity between macOS (decomposed NFD) and Windows/Linux (precomposed NFC).
+- **Salt**: 16-byte cryptographically secure CSPRNG random bytes.
+- **Memory Cost ($m$)**: `8,388,608 KiB` (8 GiB physical RAM)
+- **Time Cost ($t$)**: `64` iterations
+- **Parallelism ($p$)**: `8` threads
+- **Derived Key Material**: `64` bytes (512 bits)
+  - `Key_ChaCha`: First 32 bytes (locked in physical RAM, wiped immediately on drop)
+  - `Key_AES`: Second 32 bytes (locked in physical RAM, wiped immediately on drop)
 
 > [!NOTE]
-> 8 GiB / 64 イテレーションの負荷により、オフライン環境で紙面やQRコードを奪われた場合でも、最新GPUクラスタや専用ASICによる総当たり攻撃・辞書攻撃に対して極めて高い耐性を持ちます。
+> The massive computational complexity of 8 GiB / 64 iterations ensures that even if physical paper keys or QR codes are seized, brute-force dictionary attacks remain economically and physically intractable against modern GPU clusters and custom ASIC hardware.
 
-### 2.2 二重AEADカスケード暗号化 (Dual AEAD Cascade)
-異なる暗号プリミティブ（ストリーム暗号＋ブロック暗号）を入れ子状に二重適用することで、将来的な暗号解読やアルゴリズムの弱点発覚リスクを排除しています。
+### 2.2 Dual AEAD Cascade with Associated Data (AAD)
+Applies nested AEAD ciphers with complementary mathematical foundations (stream cipher + block cipher), cryptographically binding envelope metadata into Associated Data (AAD):
 
-1. **第1層 (ChaCha20-Poly1305)**:
-   - `Nonce_ChaCha`: 12バイト CSPRNG乱数
-   - 平文を暗号化し、中間暗号文と認証タグ（Tag_ChaCha: 16B）を生成。
-2. **第2層 (AES-256-GCM)**:
-   - `Nonce_AES`: 12バイト CSPRNG乱数
-   - 第1層の出力全体（中間暗号文 + Tag_ChaCha）を暗号化し、最終暗号文と認証タグ（Tag_AES: 16B）を生成。
+1. **Layer 1 (ChaCha20-Poly1305)**:
+   - `Nonce_ChaCha`: 12-byte CSPRNG random nonce.
+   - Encrypts raw secret plaintext, generating intermediate ciphertext and authentication tag (`Tag_ChaCha`: 16B).
+2. **Layer 2 (AES-256-GCM)**:
+   - `Nonce_AES`: 12-byte CSPRNG random nonce.
+   - `AAD`: `opke:v=3:kdf=argon2id:...` (cryptographically commits to envelope version, KDF cost parameters, and layer identifiers).
+   - Encrypts Layer 1 payload (`IntermediateCiphertext` + `Tag_ChaCha`), generating final ciphertext and authentication tag (`Tag_AES`: 16B).
+3. **Unified Decryption Error**:
+   - Decryption failures across both layers return a single, indistinguishable error message to eliminate side-channel and multi-layer decryption oracles.
 
-### 2.3 エンベロープ構造 (Envelope Format v3)
+### 2.3 Envelope Format (v3)
 ```json
 {
   "v": 3,
@@ -73,104 +82,131 @@ OPKE/
 ```
 
 > [!TIP]
-> **後方互換性**: OPKE v3.0 は、OPKE v2.0 で作成された `"v": 2` のエンベロープも自動検知してシームレスに復号可能です。
+> **Backward Compatibility & Downgrade Defense**: OPKE v3.0.1 can parse legacy v2 envelopes. However, to prevent cryptographic downgrade attacks, decrypting v2 envelopes requires an explicit `--allow-v2` command-line flag.
 
 ---
 
-## 3. 使用方法 (Usage)
+## 3. Usage
 
-### 3.1 ダブルクリック起動（対話ウィザードモード）
-Windowsエクスプローラーから `opke.exe` を直接ダブルクリックすると、対話型メニューが起動します：
+### 3.1 Double-Click Execution (Interactive Wizard Mode)
+Simply double-click `opke.exe` in Windows Explorer to launch the interactive terminal wizard:
 
 ```text
 ============================================================
-       OPKE v3.0 (Offline Paper-Key Encryptor)             
-       オフライン・ペーパーキー暗号化ツール                 
+       OPKE v3.0.1 (Offline Paper-Key Encryptor)             
+       Offline Paper-Key Encryption Utility                 
 ============================================================
- [1] 秘密情報を暗号化 (Encrypt -> Paper Key / QR)
- [2] ペーパーキーを復号 (Decrypt -> Secret)
- [3] エンベロープ情報の確認 (Inspect Envelope)
- [4] 暗号化ベンチマーク (Benchmark)
- [5] 終了 (Exit)
+ [1] Encrypt Secret (Encrypt -> Paper Key / QR)
+ [2] Decrypt Paper Key (Decrypt -> Secret)
+ [3] Inspect Envelope Metadata (Inspect Envelope)
+ [4] Benchmark Hardware (Benchmark)
+ [5] Exit
 ============================================================
-操作番号を選択してください [1-5]:
+Select operation [1-5]:
 ```
 
-- 各ステップの案内に従って秘密平文やパスワードを入力できます。
-- 処理終了時も「**Enterキーを押すと終了します**」で一時停止するため、画面が勝手に閉じることはありません。
+- Guides you through secret entry and hidden passphrase prompts.
+- Displays shoulder-surfing warnings before printing decrypted plaintext to the console.
+- Automatically pauses with *"Press Enter to exit..."* upon completion, preventing the console window from closing prematurely.
 
 ---
 
-### 3.2 コマンドライン実行 (CLI Mode)
+### 3.2 Command-Line Interface (CLI Mode)
 
-#### 暗号化 (Encrypt)
+#### Encrypting Secrets
 ```bash
-# 対話入力で暗号化し、紙面用テキストとQR画像を生成（推奨）
+# Interactive secret prompt to paper file and QR image (Recommended)
 opke encrypt -o paper_key.txt --qr paper_key.png --qr-term
 
-# パイプから暗号化
-echo "MyVeraCryptPassword" | opke encrypt -o paper_key.txt
+# Piped input from standard input (supports "-" special path)
+echo "MyVeraCryptMasterPassword" | opke encrypt -o paper_key.txt
 
-# ファイルから暗号化
+# Encrypting an existing file
 opke encrypt -i secret.txt -o paper_key.txt
 
-# プロファイル指定
-opke encrypt -o paper_key.txt --profile production # デフォルト (8 GiB, 64 iters)
-opke encrypt -o paper_key.txt --profile moderate   # 標準 (1 GiB, 16 iters)
-opke encrypt -o paper_key.txt --profile fast       # テスト用 (64 MiB, 2 iters)
+# Selecting predefined KDF profiles
+opke encrypt -o paper_key.txt --profile production # Default: 8 GiB RAM, 64 iters
+opke encrypt -o paper_key.txt --profile moderate   # Standard: 1 GiB RAM, 16 iters
+opke encrypt -o paper_key.txt --profile fast       # Fast testing: 64 MiB RAM, 2 iters
 ```
 
-#### 復号 (Decrypt)
+#### Decrypting Secrets
 ```bash
-# ペーパーキーファイルから復号 (画面非表示でパスワード入力)
+# Decrypt from paper key file (hidden passphrase prompt)
 opke decrypt -i paper_key.txt
 
-# パイプからの復号
+# Decrypt directly from a PEM block string argument (hyphen-safe argument parsing)
+opke decrypt "-----BEGIN OPKE ENVELOPE-----..."
+
+# Decrypt from a UNIX pipe
 cat paper_key.txt | opke decrypt
+
+# Decrypting legacy v2 envelopes (requires explicit opt-in)
+opke decrypt -i legacy_paper_key.txt --allow-v2
 ```
 
-#### エンベロープ情報の確認 (Inspect)
-パスフレーズを入力することなく、KDFパラメータや暗号レイヤー等のメタデータを確認できます。
+#### Inspecting Envelope Metadata
+Inspect envelope KDF parameters and cipher layers without prompting for passphrases:
 ```bash
 opke inspect -i paper_key.txt
 ```
 
-#### ベンチマーク (Benchmark)
-お使いのマシン環境で、指定したArgon2idパラメータの所要時間を事前測定します。
+#### Benchmarking Hardware
+Measure Argon2id processing time for target profiles on your local machine:
 ```bash
 opke benchmark --profile fast
 ```
 
 ---
 
-## 4. ビルド方法 (Build)
+## 4. Building from Source
 
 ```powershell
 cd opke-rs
 cargo build --release
 ```
-生成物: `opke-rs/target/release/opke.exe` (Windows) または `opke` (Linux/macOS)
-外部ランタイムやPython不要の単一バイナリとして、オフラインPCにコピーするだけで即実行できます。
+Artifact: `opke-rs/target/release/opke.exe` (Windows) or `opke` (Linux/macOS).  
+Compiled with Link-Time Optimization (`lto = true`), symbol stripping (`strip = true`), and runtime integer overflow checks (`overflow-checks = true`).
 
 ---
 
-## 5. テスト実行 (Test)
+## 5. Running Tests
 
 ```powershell
-# Rust版の全単体・統合テスト
+# Executes full unit, cryptographic, and security regression test suites (35 tests)
 cd opke-rs
 cargo test
 ```
 
 ---
 
-## 6. ライセンス (License)
+## 6. License
 
-本プロジェクトは、Rust エコシステムの標準に準拠した以下のデュアルライセンス（Dual License）の下で公開されています。利用者の選択に応じて、いずれかのライセンス条件の下で利用・再配布・改変が可能です：
+This project is dual-licensed under:
 
 - **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE))
 - **MIT License** ([LICENSE-MIT](LICENSE-MIT))
 
-> [!NOTE]
-> 本ソフトウェアは「現状有姿（AS IS）」で提供され、商品性、特定目的への適合性、データの完全性を含む一切の明示的・黙示的保証はありません。本ソフトウェアの使用または使用不能から生じるいかなる損害（データの消失、復号不能、業務中断等を含む）についても、作者および著作権者は一切の法的責任・損害賠償責任を負いません。
+You may choose to use, redistribute, or modify this software under the terms of either license.
 
+---
+
+## 7. Security Notice & Limitation of Liability
+
+> [!CAUTION]
+> **Please read the following disclaimer carefully prior to using this software:**
+>
+> 1. **"AS IS" Provision and Disclaimer of Warranty**:  
+>    This software is provided on an "AS IS" basis, without warranties or conditions of any kind, either express or implied, including, without limitation, any warranties or conditions of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A PARTICULAR PURPOSE.
+>
+> 2. **Limitation of Liability for Cryptographic and Implementation Defects**:  
+>    While OPKE adheres to strict defense-in-depth principles and comprehensive security audit remediations, neither the authors nor contributors shall be liable under any legal theory (whether in contract, tort, negligence, or otherwise) for any direct, indirect, incidental, consequential, or punitive damages—including data loss, exposure, recovery failure, or business interruption—arising from the use or inability to use this software, theoretical breaks in underlying cryptographic primitives, hardware/compiler side-channels, or undiscovered implementation flaws.
+>
+> 3. **Passphrase Irrecoverability**:  
+>    OPKE contains zero backdoors, master keys, or recovery escrow. If you lose or forget your passphrase, recovery of your encrypted plaintext is mathematically and physically impossible.
+>
+> 4. **Host Environment Integrity**:  
+>    OPKE cannot protect against compromised host environments infected with keyloggers, screen scrapers, memory injectors, or hardware monitoring implants. Ultra-sensitive operations should always be performed on dedicated, air-gapped offline systems.
+>
+> 5. **Physical Media Degradation and Redundancy**:  
+>    Physical paper degrades over time (ink fading, physical tearing, moisture). Users are strongly advised to store paper keys in multiple geographically dispersed, waterproof, and fire-resistant locations.
