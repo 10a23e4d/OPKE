@@ -1,7 +1,7 @@
 //! Terminal QR code rendering using ANSI half-block characters.
 
-use std::io::{self, Write};
 use qrcode::{Color, EcLevel, QrCode};
+use std::io::{self, Write};
 
 use crate::error::OpkeError;
 

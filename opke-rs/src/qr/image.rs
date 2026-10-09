@@ -1,8 +1,8 @@
 //! QR Code image generation (PNG and SVG) with automatic error correction level fallback.
 
-use std::path::Path;
 use image::{Rgb, RgbImage};
 use qrcode::{render::svg, Color, EcLevel, QrCode};
+use std::path::Path;
 
 use crate::error::OpkeError;
 use crate::security::write_secure_file_with_options;
@@ -23,7 +23,9 @@ pub fn generate_qr_image_with_options(
 ) -> Result<(), OpkeError> {
     let p = output_path.as_ref();
     if p.as_os_str().is_empty() || p.to_string_lossy().trim().is_empty() {
-        return Err(OpkeError::Validation("Invalid output_path: path cannot be empty.".into()));
+        return Err(OpkeError::Validation(
+            "Invalid output_path: path cannot be empty.".into(),
+        ));
     }
 
     if let Some(parent) = p.parent() {
@@ -49,7 +51,9 @@ pub fn generate_qr_image_with_options(
     }
 
     if data.is_empty() {
-        return Err(OpkeError::Validation("QR code data cannot be empty.".into()));
+        return Err(OpkeError::Validation(
+            "QR code data cannot be empty.".into(),
+        ));
     }
 
     let levels = [EcLevel::H, EcLevel::Q, EcLevel::M, EcLevel::L];

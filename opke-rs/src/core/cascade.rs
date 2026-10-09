@@ -86,8 +86,19 @@ pub fn encrypt_cascade(
 
     let l1_blob = Zeroizing::new(
         chacha_cipher
-            .encrypt(chacha_nonce, Payload { msg: plaintext, aad: aad_bytes })
-            .map_err(|e| OpkeError::Crypto(format!("Layer 1 (ChaCha20-Poly1305) encryption failed: {}", e)))?,
+            .encrypt(
+                chacha_nonce,
+                Payload {
+                    msg: plaintext,
+                    aad: aad_bytes,
+                },
+            )
+            .map_err(|e| {
+                OpkeError::Crypto(format!(
+                    "Layer 1 (ChaCha20-Poly1305) encryption failed: {}",
+                    e
+                ))
+            })?,
     );
 
     // Layer 2: AES-256-GCM
@@ -96,11 +107,21 @@ pub fn encrypt_cascade(
     let aes_nonce = AesNonce::from_slice(&n_aes);
 
     let mut l2_blob = aes_cipher
-        .encrypt(aes_nonce, Payload { msg: l1_blob.as_slice(), aad: aad_bytes })
-        .map_err(|e| OpkeError::Crypto(format!("Layer 2 (AES-256-GCM) encryption failed: {}", e)))?;
+        .encrypt(
+            aes_nonce,
+            Payload {
+                msg: l1_blob.as_slice(),
+                aad: aad_bytes,
+            },
+        )
+        .map_err(|e| {
+            OpkeError::Crypto(format!("Layer 2 (AES-256-GCM) encryption failed: {}", e))
+        })?;
 
     if l2_blob.len() < TAG_LEN {
-        return Err(OpkeError::Crypto("Layer 2 encryption output too short.".into()));
+        return Err(OpkeError::Crypto(
+            "Layer 2 encryption output too short.".into(),
+        ));
     }
 
     let ciphertext_len = l2_blob.len() - TAG_LEN;
@@ -171,7 +192,8 @@ pub fn decrypt_cascade(
 
     if l1_blob.len() < MIN_CIPHERTEXT_BYTES {
         return Err(OpkeError::Authentication(
-            "Decryption failed: authentication failed. Invalid passphrase or corrupted data.".into(),
+            "Decryption failed: authentication failed. Invalid passphrase or corrupted data."
+                .into(),
         ));
     }
 

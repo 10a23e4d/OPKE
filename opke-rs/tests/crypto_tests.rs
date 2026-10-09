@@ -1,6 +1,4 @@
-use opke::core::{
-    decrypt_cascade, derive_key_and_split, encrypt_cascade,
-};
+use opke::core::{decrypt_cascade, derive_key_and_split, encrypt_cascade};
 use opke::envelope::{create_envelope, deserialize_envelope, serialize_envelope};
 use opke::qr::generate_qr_image;
 use tempfile::NamedTempFile;
@@ -123,7 +121,10 @@ fn test_envelope_v2_backward_compatibility() {
     let parsed = deserialize_envelope(v2_json).unwrap();
     assert_eq!(parsed.v, 2);
     assert_eq!(parsed.kdf.name, "argon2id");
-    assert_eq!(parsed.cipher.layers, vec!["chacha20-poly1305", "aes-256-gcm"]);
+    assert_eq!(
+        parsed.cipher.layers,
+        vec!["chacha20-poly1305", "aes-256-gcm"]
+    );
 }
 
 #[test]
@@ -138,6 +139,7 @@ fn test_invalid_envelope_rejected() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn test_qr_generation_png_and_svg() {
     let tmp_png = NamedTempFile::new().unwrap();
     let png_path = tmp_png.path().with_extension("png");
@@ -157,4 +159,58 @@ fn test_qr_generation_png_and_svg() {
 
     let _ = std::fs::remove_file(png_path);
     let _ = std::fs::remove_file(svg_path);
+}
+
+#[cfg(all(test, not(miri)))]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(50))]
+
+        #[test]
+        fn proptest_cascade_encrypt_decrypt_roundtrip(
+            data in prop::collection::vec(any::<u8>(), 1..4096),
+            key_seed1 in any::<[u8; 32]>(),
+            key_seed2 in any::<[u8; 32]>(),
+        ) {
+            // Ensure keys are distinct
+            prop_assume!(key_seed1 != key_seed2);
+
+            let (ct, tag, n_chacha, n_aes) = encrypt_cascade(
+                &data, &key_seed1, &key_seed2, None, None, None
+            ).unwrap();
+
+            let decrypted = decrypt_cascade(
+                &ct, &tag, &n_chacha, &n_aes, &key_seed1, &key_seed2, None
+            ).unwrap();
+
+            prop_assert_eq!(decrypted.as_slice(), data.as_slice());
+        }
+
+        #[test]
+        fn proptest_cascade_tamper_detection(
+            data in prop::collection::vec(any::<u8>(), 1..2048),
+            key_seed1 in any::<[u8; 32]>(),
+            key_seed2 in any::<[u8; 32]>(),
+            flip_byte_idx in any::<usize>(),
+        ) {
+            prop_assume!(key_seed1 != key_seed2);
+
+            let (mut ct, tag, n_chacha, n_aes) = encrypt_cascade(
+                &data, &key_seed1, &key_seed2, None, None, None
+            ).unwrap();
+
+            // Tamper with one byte in the ciphertext
+            let idx = flip_byte_idx % ct.len();
+            ct[idx] ^= 0x01;
+
+            let res = decrypt_cascade(
+                &ct, &tag, &n_chacha, &n_aes, &key_seed1, &key_seed2, None
+            );
+
+            prop_assert!(res.is_err(), "Tampered ciphertext must be rejected by AEAD");
+        }
+    }
 }

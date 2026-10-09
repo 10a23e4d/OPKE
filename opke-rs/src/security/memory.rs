@@ -1,8 +1,8 @@
 //! Memory inspection utilities to prevent system freeze / OOM DoS attacks.
 //! Supports container cgroup v1 and v2 limits alongside host physical RAM detection.
 
-use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 use crate::error::OpkeError;
+use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
 #[cfg(windows)]
 extern "system" {
@@ -177,15 +177,17 @@ pub fn get_available_memory_kib() -> Option<u64> {
 
         // 2. Check Linux cgroups v1 if cgroups v2 is not active
         if cgroup_kib.is_none() {
-            if let Ok(val) = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
+            if let Ok(val) = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+            {
                 let trimmed = val.trim();
                 if let Ok(lim) = trimmed.parse::<u64>() {
                     // Filter out unbounded / default maximum values (e.g. 9223372036854771712)
                     if lim < (1u64 << 60) {
-                        let curr = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.usage_in_bytes")
-                            .ok()
-                            .and_then(|u| u.trim().parse::<u64>().ok())
-                            .unwrap_or(0);
+                        let curr =
+                            std::fs::read_to_string("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+                                .ok()
+                                .and_then(|u| u.trim().parse::<u64>().ok())
+                                .unwrap_or(0);
                         cgroup_kib = Some(lim.saturating_sub(curr) / 1024);
                     }
                 }

@@ -1,7 +1,5 @@
 //! Security tests covering all 26 audited vulnerabilities (VULN-01 to VULN-26).
 
-use std::fs;
-use tempfile::NamedTempFile;
 use opke::cli::args::{BenchmarkArgs, DecryptArgs, EncryptArgs};
 use opke::cli::{cmd_benchmark, cmd_decrypt, cmd_encrypt};
 use opke::core::MAX_CIPHERTEXT_BYTES;
@@ -10,6 +8,8 @@ use opke::qr::{generate_qr_image, print_terminal_qr};
 use opke::security::{
     get_available_memory_kib, read_secure_file, write_secure_file, write_secure_file_with_options,
 };
+use std::fs;
+use tempfile::NamedTempFile;
 
 // =========================================================================
 // VULN-01 & VULN-15: Hardlink rejection and preserving original target content
@@ -226,7 +226,10 @@ fn test_v14_v23_cmd_benchmark_bounds_and_typo() {
 fn test_v16_available_memory_detection() {
     let mem = get_available_memory_kib();
     assert!(mem.is_some(), "Available memory should be detected");
-    assert!(mem.unwrap() > 0, "Available memory should be greater than 0");
+    assert!(
+        mem.unwrap() > 0,
+        "Available memory should be greater than 0"
+    );
 }
 
 // =========================================================================
@@ -301,7 +304,8 @@ fn test_v18_base64_ciphertext_upper_bound_prevalidation() {
 // =========================================================================
 #[test]
 fn test_v19_pem_formatting_and_bounds() {
-    let sample_payload = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODk=";
+    let sample_payload =
+        "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODk=";
     let pem_out = pem::to_paper_format(sample_payload, 64).unwrap();
     assert!(pem_out.starts_with(pem::PEM_HEADER));
     assert!(pem_out.ends_with(&format!("{}\n", pem::PEM_FOOTER)));
@@ -336,7 +340,8 @@ fn test_v20_terminal_qr_reports_empty_and_overflow() {
     assert!(res_overflow.is_ok());
     let s_overflow = String::from_utf8(out_overflow).unwrap();
     assert!(
-        s_overflow.contains("Terminal QR generation unavailable: data exceeds maximum QR code capacity"),
+        s_overflow
+            .contains("Terminal QR generation unavailable: data exceeds maximum QR code capacity"),
         "{}",
         s_overflow
     );
@@ -460,7 +465,10 @@ fn test_v25_decrypt_limit_bounds_rejected() {
 fn test_v26_wizard_quote_stripping_logic() {
     let clean_path = |input: &str| -> String {
         let mut s = input.trim();
-        if s.len() >= 2 && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\''))) {
+        if s.len() >= 2
+            && ((s.starts_with('"') && s.ends_with('"'))
+                || (s.starts_with('\'') && s.ends_with('\'')))
+        {
             s = &s[1..s.len() - 1];
         }
         s.trim().to_string()

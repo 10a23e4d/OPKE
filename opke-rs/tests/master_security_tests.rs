@@ -14,9 +14,16 @@ use tempfile::NamedTempFile;
 fn test_v52_pem_hyphen_argument_parsing() {
     let pem_input = "-----BEGIN OPKE ENVELOPE-----\neyJ2IjozfQ==\n-----END OPKE ENVELOPE-----";
     let cli = Cli::try_parse_from(["opke", "decrypt", pem_input]);
-    assert!(cli.is_ok(), "Clap failed to parse hyphen-prefixed PEM string: {:?}", cli.err());
+    assert!(
+        cli.is_ok(),
+        "Clap failed to parse hyphen-prefixed PEM string: {:?}",
+        cli.err()
+    );
 
-    if let Ok(Cli { command: Some(Commands::Decrypt(args)) }) = cli {
+    if let Ok(Cli {
+        command: Some(Commands::Decrypt(args)),
+    }) = cli
+    {
         assert_eq!(args.input.as_deref(), Some(pem_input));
     } else {
         panic!("Parsed command was not Decrypt");
@@ -24,7 +31,11 @@ fn test_v52_pem_hyphen_argument_parsing() {
 
     // Inspect command also supports hyphen-prefixed input
     let cli_inspect = Cli::try_parse_from(["opke", "inspect", pem_input]);
-    assert!(cli_inspect.is_ok(), "Clap failed on inspect with PEM: {:?}", cli_inspect.err());
+    assert!(
+        cli_inspect.is_ok(),
+        "Clap failed on inspect with PEM: {:?}",
+        cli_inspect.err()
+    );
 }
 
 /// VULN-55: Verify Unicode NFC normalization ensures cross-platform key equivalence.
@@ -33,13 +44,15 @@ fn test_v52_pem_hyphen_argument_parsing() {
 #[test]
 fn test_v55_unicode_nfc_cross_platform() {
     let precomposed_nfc = "Caf\u{00E9}"; // Café (NFC: 4 chars)
-    let decomposed_nfd = "Cafe\u{0301}";  // Café (NFD: 5 chars: 'C', 'a', 'f', 'e', '\u{0301}')
+    let decomposed_nfd = "Cafe\u{0301}"; // Café (NFD: 5 chars: 'C', 'a', 'f', 'e', '\u{0301}')
 
     assert_ne!(precomposed_nfc.as_bytes(), decomposed_nfd.as_bytes());
 
     let salt = [55u8; 16];
-    let (k1_nfc, k2_nfc) = derive_key_and_split(precomposed_nfc.as_bytes(), &salt, 1024, 1, 1).unwrap();
-    let (k1_nfd, k2_nfd) = derive_key_and_split(decomposed_nfd.as_bytes(), &salt, 1024, 1, 1).unwrap();
+    let (k1_nfc, k2_nfc) =
+        derive_key_and_split(precomposed_nfc.as_bytes(), &salt, 1024, 1, 1).unwrap();
+    let (k1_nfd, k2_nfd) =
+        derive_key_and_split(decomposed_nfd.as_bytes(), &salt, 1024, 1, 1).unwrap();
 
     assert_eq!(
         k1_nfc.as_slice(),
@@ -60,17 +73,12 @@ fn test_v41_v42_v59_cascade_unified_security() {
     let secret = b"Top Secret Payload";
     let key_chacha = [10u8; 32];
     let key_aes = [20u8; 32];
-    let aad_v3 = b"opke:v=3:kdf=argon2id:m=65536:t=2:p=2:c=chacha20-poly1305+aes-256-gcm:nc=AQE:na=AgI";
+    let aad_v3 =
+        b"opke:v=3:kdf=argon2id:m=65536:t=2:p=2:c=chacha20-poly1305+aes-256-gcm:nc=AQE:na=AgI";
 
     // Encrypt with AAD bound
-    let (ct, tag, n_chacha, n_aes) = encrypt_cascade(
-        secret,
-        &key_chacha,
-        &key_aes,
-        None,
-        None,
-        Some(aad_v3),
-    ).unwrap();
+    let (ct, tag, n_chacha, n_aes) =
+        encrypt_cascade(secret, &key_chacha, &key_aes, None, None, Some(aad_v3)).unwrap();
 
     // Decrypt with correct AAD and unified nonce order (n_chacha first, n_aes second)
     let decrypted = decrypt_cascade(
@@ -81,7 +89,8 @@ fn test_v41_v42_v59_cascade_unified_security() {
         &key_chacha,
         &key_aes,
         Some(aad_v3),
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(decrypted.as_slice(), secret);
 
     // Tampered AAD (e.g. attempting to downgrade header) must fail with unified error (VULN-41, VULN-42)
@@ -115,9 +124,10 @@ fn test_v41_v42_v59_cascade_unified_security() {
         Some(aad_v3),
     );
     assert!(err_ct.is_err());
-    assert!(
-        err_ct.unwrap_err().to_string().contains("authentication failed. Invalid passphrase or corrupted data.")
-    );
+    assert!(err_ct
+        .unwrap_err()
+        .to_string()
+        .contains("authentication failed. Invalid passphrase or corrupted data."));
 }
 
 /// VULN-33: JSON duplicate key rejection in deserialization.
@@ -145,7 +155,11 @@ fn test_v33_duplicate_json_keys_rejected() {
     let res = deserialize_envelope(duplicate_key_json);
     assert!(res.is_err(), "Duplicate JSON key must be rejected");
     let msg = res.unwrap_err().to_string();
-    assert!(msg.contains("Duplicate JSON key detected: 'v'"), "Expected duplicate key error, got: {}", msg);
+    assert!(
+        msg.contains("Duplicate JSON key detected: 'v'"),
+        "Expected duplicate key error, got: {}",
+        msg
+    );
 }
 
 /// VULN-65: Base64 pre-validation for salt, nonce, and tag lengths.
@@ -153,7 +167,8 @@ fn test_v33_duplicate_json_keys_rejected() {
 fn test_v65_base64_prevalidation_salt_nonce_tag() {
     // Salt max is 24 chars for 16 bytes. Let's create an envelope with a huge salt Base64.
     let huge_salt_b64 = "A".repeat(100);
-    let bad_salt_json = format!(r#"{{
+    let bad_salt_json = format!(
+        r#"{{
         "v": 3,
         "kdf": {{
             "name": "argon2id",
@@ -169,12 +184,21 @@ fn test_v65_base64_prevalidation_salt_nonce_tag() {
             "tag_aes": "AwMDAwMDAwMDAwMDAwMDAw=="
         }},
         "data": "dmFsaWRfY2lwaGVydGV4dA=="
-    }}"#, huge_salt_b64);
+    }}"#,
+        huge_salt_b64
+    );
 
     let res = deserialize_envelope(&bad_salt_json);
-    assert!(res.is_err(), "Huge salt Base64 must be rejected before allocation");
+    assert!(
+        res.is_err(),
+        "Huge salt Base64 must be rejected before allocation"
+    );
     let msg = res.unwrap_err().to_string();
-    assert!(msg.contains("Base64 salt length exceeds maximum allowed bound"), "Got error: {}", msg);
+    assert!(
+        msg.contains("Base64 salt length exceeds maximum allowed bound"),
+        "Got error: {}",
+        msg
+    );
 }
 
 /// VULN-39 & VULN-40: Path validation against NTFS Alternate Data Streams (ADS) and Windows reserved device names.
@@ -187,10 +211,16 @@ fn test_v39_v40_windows_reserved_names_and_ads() {
     assert!(msg.contains("NTFS Alternate Data Streams"), "Got: {}", msg);
 
     // 2. Windows reserved device names
-    let reserved = ["NUL", "CON", "AUX", "PRN", "COM1", "LPT1", "nul.txt", "con.dat"];
+    let reserved = [
+        "NUL", "CON", "AUX", "PRN", "COM1", "LPT1", "nul.txt", "con.dat",
+    ];
     for name in &reserved {
         let res_dev = write_secure_file(name, b"secret");
-        assert!(res_dev.is_err(), "Reserved device name '{}' must be rejected", name);
+        assert!(
+            res_dev.is_err(),
+            "Reserved device name '{}' must be rejected",
+            name
+        );
         let msg = res_dev.unwrap_err().to_string();
         assert!(msg.contains("Windows reserved device name"), "Got: {}", msg);
     }
@@ -204,7 +234,10 @@ fn test_v53_terminal_qr_ansi_colors() {
     assert!(out.is_ok());
     let qr_str = String::from_utf8(buf).unwrap();
     // Must contain explicit white background / black foreground ANSI escape code
-    assert!(qr_str.contains("\x1b[47m\x1b[30m"), "Must set white background and black text");
+    assert!(
+        qr_str.contains("\x1b[47m\x1b[30m"),
+        "Must set white background and black text"
+    );
     // Must contain ANSI reset
     assert!(qr_str.contains("\x1b[0m"), "Must reset terminal ANSI style");
 }
@@ -230,10 +263,16 @@ fn test_v54_core_secret_memory_locking() {
 #[test]
 fn test_v70_cli_conflicts_with() {
     let cli = Cli::try_parse_from(["opke", "decrypt", "direct_input", "-i", "file.txt"]);
-    assert!(cli.is_err(), "Providing both positional input and -i must be rejected by Clap");
+    assert!(
+        cli.is_err(),
+        "Providing both positional input and -i must be rejected by Clap"
+    );
 
     let cli_enc = Cli::try_parse_from(["opke", "encrypt", "direct_secret", "-i", "file.txt"]);
-    assert!(cli_enc.is_err(), "Providing both positional secret and -i must be rejected by Clap");
+    assert!(
+        cli_enc.is_err(),
+        "Providing both positional secret and -i must be rejected by Clap"
+    );
 }
 
 /// VULN-45: Envelope creation version bounds validation.
@@ -258,7 +297,7 @@ fn test_v45_envelope_version_bounds() {
 #[test]
 fn test_v66_pem_non_utf8_chunk_error() {
     let test_str = "あ".repeat(10); // 30 bytes, 3 bytes per char
-    // line_length = 16 splits the 6th character across chunk boundary
+                                    // line_length = 16 splits the 6th character across chunk boundary
     let res = to_paper_format(&test_str, 16);
     assert!(res.is_err(), "Non-UTF-8 chunk split must return error");
 
@@ -298,8 +337,8 @@ fn test_v30_v29_v57_file_security_lifecycle() {
 /// VULN-41 / VULN-60: Legacy v2 envelope must be rejected during decryption unless --allow-v2 is passed.
 #[test]
 fn test_v41_v2_downgrade_rejected_without_flag() {
-    use opke::cli::cmd_decrypt;
     use opke::cli::args::DecryptArgs;
+    use opke::cli::cmd_decrypt;
 
     let v2_json = r#"{
       "v": 2,
@@ -332,7 +371,10 @@ fn test_v41_v2_downgrade_rejected_without_flag() {
     };
 
     let res = cmd_decrypt::execute(args_without_flag);
-    assert!(res.is_err(), "v2 decryption must be rejected without --allow-v2");
+    assert!(
+        res.is_err(),
+        "v2 decryption must be rejected without --allow-v2"
+    );
     let err_msg = res.unwrap_err().to_string();
     assert!(
         err_msg.contains("Use '--allow-v2' to permit decrypting legacy v2 envelopes"),

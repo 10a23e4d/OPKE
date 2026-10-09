@@ -164,7 +164,9 @@ impl OPKEEnvelope {
             .decode(&self.data)
             .map_err(|e| OpkeError::Envelope(format!("Invalid Base64 ciphertext data: {}", e)))?;
         if final_ciphertext.is_empty() {
-            return Err(OpkeError::Envelope("Ciphertext data cannot be empty.".into()));
+            return Err(OpkeError::Envelope(
+                "Ciphertext data cannot be empty.".into(),
+            ));
         }
         if final_ciphertext.len() < MIN_CIPHERTEXT_BYTES {
             return Err(OpkeError::Envelope(format!(
@@ -348,7 +350,10 @@ fn validate_no_duplicate_json_keys(json: &str) -> Result<(), OpkeError> {
 }
 
 /// Serializes an OPKEEnvelope to string (either paper PEM format or compact Base64).
-pub fn serialize_envelope(envelope: &OPKEEnvelope, paper_format: bool) -> Result<String, OpkeError> {
+pub fn serialize_envelope(
+    envelope: &OPKEEnvelope,
+    paper_format: bool,
+) -> Result<String, OpkeError> {
     if paper_format {
         envelope.to_paper_format()
     } else {
@@ -383,11 +388,12 @@ pub fn deserialize_envelope(raw_input: &str) -> Result<OPKEEnvelope, OpkeError> 
     let json_str = if cleaned.starts_with('{') && cleaned.ends_with('}') {
         cleaned
     } else {
-        let decoded = BASE64_STANDARD
-            .decode(&cleaned)
-            .map_err(|e| OpkeError::Envelope(format!("Failed to decode Base64 envelope payload: {}", e)))?;
-        String::from_utf8(decoded)
-            .map_err(|e| OpkeError::Envelope(format!("Envelope payload is not valid UTF-8: {}", e)))?
+        let decoded = BASE64_STANDARD.decode(&cleaned).map_err(|e| {
+            OpkeError::Envelope(format!("Failed to decode Base64 envelope payload: {}", e))
+        })?;
+        String::from_utf8(decoded).map_err(|e| {
+            OpkeError::Envelope(format!("Envelope payload is not valid UTF-8: {}", e))
+        })?
     };
 
     // Strict duplicate key detection to prevent parser differential attacks (VULN-33)

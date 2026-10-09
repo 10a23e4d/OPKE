@@ -29,10 +29,14 @@ pub fn scrub_env_passphrase() -> Result<Option<Zeroizing<String>>, OpkeError> {
                 if let Some(idx) = content.rfind(')') {
                     let fields: Vec<&str> = content[idx + 2..].split_whitespace().collect();
                     if fields.len() > 48 {
-                        if let (Ok(env_start), Ok(env_end)) = (fields[47].parse::<usize>(), fields[48].parse::<usize>()) {
+                        if let (Ok(env_start), Ok(env_end)) =
+                            (fields[47].parse::<usize>(), fields[48].parse::<usize>())
+                        {
                             if env_end > env_start {
                                 let len = env_end - env_start;
-                                let slice = unsafe { std::slice::from_raw_parts_mut(env_start as *mut u8, len) };
+                                let slice = unsafe {
+                                    std::slice::from_raw_parts_mut(env_start as *mut u8, len)
+                                };
                                 let targets = [
                                     format!("OPKE_PASSPHRASE={}", &*val).into_bytes(),
                                     val.as_bytes().to_vec(),
@@ -73,10 +77,7 @@ pub fn scrub_env_passphrase() -> Result<Option<Zeroizing<String>>, OpkeError> {
                             len += 1;
                         }
                         let slice = std::slice::from_raw_parts_mut(curr, len);
-                        let targets = [
-                            format!("OPKE_PASSPHRASE={}", *val),
-                            (*val).clone(),
-                        ];
+                        let targets = [format!("OPKE_PASSPHRASE={}", *val), (*val).clone()];
                         for target in &targets {
                             if target.is_empty() {
                                 continue;

@@ -107,11 +107,12 @@ fn validate_file_path(p: &Path) -> Result<(), OpkeError> {
 
     // 1. Check for NTFS Alternate Data Streams (ADS: filename:stream)
     // Allow standard Windows drive specifier (e.g., C:\ or D:/)
-    let rest_path = if s.len() >= 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic() {
-        &s[2..]
-    } else {
-        &s[..]
-    };
+    let rest_path =
+        if s.len() >= 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic() {
+            &s[2..]
+        } else {
+            &s[..]
+        };
     if rest_path.contains(':') {
         return Err(OpkeError::Validation(format!(
             "NTFS Alternate Data Streams (ADS) are prohibited for security: {}",
@@ -128,9 +129,8 @@ fn validate_file_path(p: &Path) -> Result<(), OpkeError> {
             .to_ascii_uppercase();
 
         let reserved = [
-            "CON", "PRN", "AUX", "NUL",
-            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+            "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
         ];
         if reserved.contains(&stem.as_str()) {
             return Err(OpkeError::Validation(format!(
@@ -144,7 +144,10 @@ fn validate_file_path(p: &Path) -> Result<(), OpkeError> {
 }
 
 /// Reads a regular file into a zeroized byte buffer, strictly refusing symlinks, FIFOs, and non-regular files.
-pub fn read_secure_file(path: impl AsRef<Path>, max_bytes: usize) -> Result<Zeroizing<Vec<u8>>, OpkeError> {
+pub fn read_secure_file(
+    path: impl AsRef<Path>,
+    max_bytes: usize,
+) -> Result<Zeroizing<Vec<u8>>, OpkeError> {
     let p = path.as_ref();
     validate_file_path(p)?;
 
@@ -321,7 +324,9 @@ pub fn write_secure_file_with_options(
 
         // VULN-62: Advisory/mandatory file lock on Unix
         use std::os::unix::io::AsRawFd;
-        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX); }
+        unsafe {
+            libc::flock(file.as_raw_fd(), libc::LOCK_EX);
+        }
     }
 
     #[cfg(windows)]
@@ -347,7 +352,7 @@ pub fn write_secure_file_with_options(
             let ret = unsafe {
                 GetSecurityInfo(
                     handle as *mut _,
-                    1, // SE_FILE_OBJECT
+                    1,          // SE_FILE_OBJECT
                     0x00000001, // OWNER_SECURITY_INFORMATION
                     &mut owner_sid,
                     std::ptr::null_mut(),
@@ -359,7 +364,8 @@ pub fn write_secure_file_with_options(
             if ret == 0 && !owner_sid.is_null() {
                 let mut token_handle: *mut std::ffi::c_void = std::ptr::null_mut();
                 let token_ok = unsafe {
-                    OpenProcessToken(GetCurrentProcess(), 0x0008, &mut token_handle) // TOKEN_QUERY
+                    OpenProcessToken(GetCurrentProcess(), 0x0008, &mut token_handle)
+                    // TOKEN_QUERY
                 };
                 if token_ok != 0 && !token_handle.is_null() {
                     let mut token_user_buf = [0u8; 256];
@@ -373,14 +379,20 @@ pub fn write_secure_file_with_options(
                             &mut ret_len,
                         )
                     };
-                    unsafe { CloseHandle(token_handle); }
+                    unsafe {
+                        CloseHandle(token_handle);
+                    }
                     if info_ok != 0 {
                         let token_user_sid = unsafe {
-                            std::ptr::read_unaligned(token_user_buf.as_ptr() as *const *mut std::ffi::c_void)
+                            std::ptr::read_unaligned(
+                                token_user_buf.as_ptr() as *const *mut std::ffi::c_void
+                            )
                         };
                         let same = unsafe { EqualSid(owner_sid, token_user_sid) };
                         if same == 0 {
-                            unsafe { LocalFree(file_sd); }
+                            unsafe {
+                                LocalFree(file_sd);
+                            }
                             return Err(OpkeError::Validation(format!(
                                 "Refusing to write to file owned by another user (Windows SID mismatch): {}",
                                 p.display()
@@ -388,7 +400,9 @@ pub fn write_secure_file_with_options(
                         }
                     }
                 }
-                unsafe { LocalFree(file_sd); }
+                unsafe {
+                    LocalFree(file_sd);
+                }
             }
         }
 
@@ -417,7 +431,7 @@ pub fn write_secure_file_with_options(
                 let set_res = unsafe {
                     SetSecurityInfo(
                         handle as *mut _,
-                        1, // SE_FILE_OBJECT
+                        1,                       // SE_FILE_OBJECT
                         0x00000004 | 0x80000000, // DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
                         std::ptr::null_mut(),
                         std::ptr::null_mut(),
@@ -445,7 +459,8 @@ pub fn write_secure_file_with_options(
                 let _ = io::stdin().read_line(&mut ans);
                 if !ans.trim().eq_ignore_ascii_case("y") {
                     return Err(OpkeError::Validation(
-                        "セキュリティ保護設定（ACL）の適用に失敗したため、書き込みを中止しました。".into(),
+                        "セキュリティ保護設定（ACL）の適用に失敗したため、書き込みを中止しました。"
+                            .into(),
                     ));
                 }
             } else if force {
@@ -458,7 +473,9 @@ pub fn write_secure_file_with_options(
         }
 
         // VULN-62: Mandatory file locking on Windows
-        unsafe { LockFile(handle as *mut _, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF); }
+        unsafe {
+            LockFile(handle as *mut _, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF);
+        }
     }
 
     // Write data and truncate afterwards to protect existing file on write error (VULN-29)
@@ -474,12 +491,16 @@ pub fn write_secure_file_with_options(
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
-        unsafe { UnlockFile(file.as_raw_handle() as *mut _, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF); }
+        unsafe {
+            UnlockFile(file.as_raw_handle() as *mut _, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF);
+        }
     }
     #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
-        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN); }
+        unsafe {
+            libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+        }
     }
 
     // Close the file handle explicitly before cleanup to eliminate ERROR_SHARING_VIOLATION on Windows (VULN-30)

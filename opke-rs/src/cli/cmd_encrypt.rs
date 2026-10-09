@@ -1,14 +1,14 @@
 //! Handler for `opke encrypt` subcommand.
 
-use std::io::{self, IsTerminal, Read, Write};
-use std::time::Instant;
 use base64::prelude::*;
 use rand::{rngs::OsRng, RngCore};
+use std::io::{self, IsTerminal, Read, Write};
+use std::time::Instant;
 use zeroize::Zeroizing;
 
 use crate::core::{
-    derive_key_and_split, encrypt_cascade, get_profile, MAX_SECRET_BYTES,
-    MIN_M_KIB, MIN_P, MIN_T, MAX_M_KIB, MAX_P, MAX_T, NONCE_LEN, SALT_LEN,
+    derive_key_and_split, encrypt_cascade, get_profile, MAX_M_KIB, MAX_P, MAX_SECRET_BYTES, MAX_T,
+    MIN_M_KIB, MIN_P, MIN_T, NONCE_LEN, SALT_LEN,
 };
 use crate::envelope::create_envelope;
 use crate::error::OpkeError;
@@ -131,19 +131,16 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
     let mut salt = [0u8; SALT_LEN];
     OsRng.fill_bytes(&mut salt);
 
-    let (key_chacha, key_aes) = derive_key_and_split(
-        passphrase.as_bytes(),
-        &salt,
-        m_kib,
-        t,
-        p,
-    )?;
+    let (key_chacha, key_aes) = derive_key_and_split(passphrase.as_bytes(), &salt, m_kib, t, p)?;
 
     // Immediately drop passphrase after key derivation (VULN-36, VULN-68)
     drop(passphrase);
 
     let kdf_elapsed = t0.elapsed();
-    eprintln!("[*] Key derivation completed in {:.2}s.", kdf_elapsed.as_secs_f64());
+    eprintln!(
+        "[*] Key derivation completed in {:.2}s.",
+        kdf_elapsed.as_secs_f64()
+    );
 
     // 4. Perform Cascade AEAD Encryption with Nonce Preparation & AAD Commitment (VULN-41)
     let target_version = if args.v2 { 2 } else { 3 };
@@ -161,10 +158,13 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
     let b64_na = BASE64_STANDARD.encode(nonce_aes);
 
     let aad = if target_version == 3 {
-        Some(format!(
-            "opke:v=3:kdf=argon2id:m={}:t={}:p={}:c=chacha20-poly1305+aes-256-gcm:nc={}:na={}",
-            m_kib, t, p, b64_nc, b64_na
-        ).into_bytes())
+        Some(
+            format!(
+                "opke:v=3:kdf=argon2id:m={}:t={}:p={}:c=chacha20-poly1305+aes-256-gcm:nc={}:na={}",
+                m_kib, t, p, b64_nc, b64_na
+            )
+            .into_bytes(),
+        )
     } else {
         None
     };
@@ -212,7 +212,10 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
             let p_out = std::path::Path::new(out_path);
             if p_out.exists() && !args.force {
                 if io::stdin().is_terminal() {
-                    eprintln!("[!] 警告: 出力先ファイル '{}' は既に存在します。", p_out.display());
+                    eprintln!(
+                        "[!] 警告: 出力先ファイル '{}' は既に存在します。",
+                        p_out.display()
+                    );
                     eprint!("上書きしますか？ (y/N): ");
                     let _ = io::stderr().flush();
                     let mut ans = String::new();

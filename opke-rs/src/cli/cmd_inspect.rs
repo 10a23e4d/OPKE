@@ -13,8 +13,9 @@ pub fn execute(args: InspectArgs) -> Result<(), OpkeError> {
         inp
     } else if let Some(path) = args.input_file {
         let bytes = read_secure_file(path, MAX_ENVELOPE_CHARS)?;
-        String::from_utf8(bytes.to_vec())
-            .map_err(|e| OpkeError::Validation(format!("Envelope file is not valid UTF-8: {}", e)))?
+        String::from_utf8(bytes.to_vec()).map_err(|e| {
+            OpkeError::Validation(format!("Envelope file is not valid UTF-8: {}", e))
+        })?
     } else {
         if io::stdin().is_terminal() {
             eprintln!("[*] Paste your OPKE envelope (or PEM block), then press Ctrl+Z (Windows) or Ctrl+D (Unix) then Enter:");
@@ -59,7 +60,10 @@ pub fn execute(args: InspectArgs) -> Result<(), OpkeError> {
     println!("AES-256 Nonce    : {}", envelope.cipher.nonce_aes);
     println!("AES-256 Tag      : {}", envelope.cipher.tag_aes);
     println!("------------------------------------------------------------");
-    println!("Ciphertext Size  : {} bytes", decoded.final_ciphertext.len());
+    println!(
+        "Ciphertext Size  : {} bytes",
+        decoded.final_ciphertext.len()
+    );
     println!("============================================================");
 
     Ok(())

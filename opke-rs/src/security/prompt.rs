@@ -32,7 +32,9 @@ impl TerminalEchoGuard {
                 if !h.is_null() && h as isize != -1 {
                     let mut mode = 0u32;
                     if GetConsoleMode(h, &mut mode) != 0 {
-                        return Self { orig: Some((h, mode)) };
+                        return Self {
+                            orig: Some((h, mode)),
+                        };
                     }
                 }
             }
@@ -80,10 +82,10 @@ pub fn prompt_passphrase(confirm: bool) -> Result<Zeroizing<String>, OpkeError> 
 
     if confirm {
         eprint!("Confirm passphrase: ");
-        let p2 = Zeroizing::new(
-            rpassword::read_password()
-                .map_err(|e| OpkeError::Validation(format!("Failed to read confirmation: {}", e)))?,
-        );
+        let p2 =
+            Zeroizing::new(rpassword::read_password().map_err(|e| {
+                OpkeError::Validation(format!("Failed to read confirmation: {}", e))
+            })?);
 
         if !bool::from(p1.as_bytes().ct_eq(p2.as_bytes())) {
             return Err(OpkeError::Validation("Passphrases do not match.".into()));

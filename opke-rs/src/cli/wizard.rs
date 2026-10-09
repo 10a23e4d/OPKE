@@ -1,7 +1,7 @@
 //! Interactive Wizard mode for double-click and guided operation.
 
-use std::io::{self, IsTerminal, Write};
 use crate::error::OpkeError;
+use std::io::{self, IsTerminal, Write};
 
 use super::args::{BenchmarkArgs, DecryptArgs, EncryptArgs, InspectArgs};
 use super::{cmd_benchmark, cmd_decrypt, cmd_encrypt, cmd_inspect};
@@ -26,10 +26,14 @@ pub fn prompt_line(prompt: &str) -> Result<String, OpkeError> {
     let mut line = String::new();
     let n = io::stdin().read_line(&mut line)?;
     if n == 0 {
-        return Err(OpkeError::Validation("標準入力の終端 (EOF) に達しました。".into()));
+        return Err(OpkeError::Validation(
+            "標準入力の終端 (EOF) に達しました。".into(),
+        ));
     }
     let mut s = line.trim();
-    if s.len() >= 2 && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\''))) {
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
         s = &s[1..s.len() - 1];
     }
     Ok(s.trim().to_string())
@@ -50,7 +54,10 @@ fn prompt_output_file(prompt: &str, default: &str) -> Result<Option<String>, Opk
         }
         let p = std::path::Path::new(&path_str);
         if p.exists() {
-            eprintln!("[!] 警告: 出力先ファイル '{}' は既に存在します。", p.display());
+            eprintln!(
+                "[!] 警告: 出力先ファイル '{}' は既に存在します。",
+                p.display()
+            );
             let ans = prompt_line("上書きしますか？ (y/N): ")?;
             if ans.eq_ignore_ascii_case("y") {
                 return Ok(Some(path_str));
@@ -73,7 +80,10 @@ fn prompt_optional_output_file(prompt: &str) -> Result<Option<String>, OpkeError
         }
         let p = std::path::Path::new(&input);
         if p.exists() {
-            eprintln!("[!] 警告: 出力先ファイル '{}' は既に存在します。", p.display());
+            eprintln!(
+                "[!] 警告: 出力先ファイル '{}' は既に存在します。",
+                p.display()
+            );
             let ans = prompt_line("上書きしますか？ (y/N): ")?;
             if ans.eq_ignore_ascii_case("y") {
                 return Ok(Some(input));
@@ -125,8 +135,13 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                     _ => "production",
                 };
 
-                let in_file = prompt_line("秘密情報ファイルから読み込みますか？ (空欄で直接入力): ")?;
-                let input_file = if in_file.is_empty() { None } else { Some(in_file) };
+                let in_file =
+                    prompt_line("秘密情報ファイルから読み込みますか？ (空欄で直接入力): ")?;
+                let input_file = if in_file.is_empty() {
+                    None
+                } else {
+                    Some(in_file)
+                };
 
                 let output = prompt_output_file(
                     "ペーパーキー出力ファイル名 [デフォルト: paper_key.txt]: ",
@@ -138,7 +153,8 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                     "paper_key.png",
                 )?;
 
-                let qr_term_ans = prompt_line("ターミナル画面上にもQRコードを表示しますか？ (Y/n): ")?;
+                let qr_term_ans =
+                    prompt_line("ターミナル画面上にもQRコードを表示しますか？ (Y/n): ")?;
                 let qr_term = !qr_term_ans.eq_ignore_ascii_case("n");
 
                 let args = EncryptArgs {
@@ -181,7 +197,9 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
 
                 // VULN-50: Warn user about shoulder surfing before direct screen output
                 if output.is_none() {
-                    println!("[!] 警告: 保存先ファイルを指定しない場合、平文が画面に直接表示されます。");
+                    println!(
+                        "[!] 警告: 保存先ファイルを指定しない場合、平文が画面に直接表示されます。"
+                    );
                     println!("    周囲に覗き見（ショルダーサーフィン）の恐れがないことを確認してください。");
                     let confirm = prompt_line("画面表示を続行しますか？ (y/N): ")?;
                     if !confirm.trim().eq_ignore_ascii_case("y") {
@@ -211,7 +229,8 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
             "3" => {
                 println!();
                 println!("--- [3] エンベロープ情報の確認 ---");
-                let in_file = prompt_line("確認するペーパーキーファイル名 [デフォルト: paper_key.txt]: ")?;
+                let in_file =
+                    prompt_line("確認するペーパーキーファイル名 [デフォルト: paper_key.txt]: ")?;
                 let input_file = if in_file.is_empty() {
                     Some("paper_key.txt".to_string())
                 } else {

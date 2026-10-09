@@ -18,10 +18,14 @@ pub fn scrub_cmdline_targets(targets: &[&str]) {
             if let Some(idx) = content.rfind(')') {
                 let fields: Vec<&str> = content[idx + 2..].split_whitespace().collect();
                 if fields.len() > 46 {
-                    if let (Ok(arg_start), Ok(arg_end)) = (fields[45].parse::<usize>(), fields[46].parse::<usize>()) {
+                    if let (Ok(arg_start), Ok(arg_end)) =
+                        (fields[45].parse::<usize>(), fields[46].parse::<usize>())
+                    {
                         if arg_end > arg_start {
                             let len = arg_end - arg_start;
-                            let slice = unsafe { std::slice::from_raw_parts_mut(arg_start as *mut u8, len) };
+                            let slice = unsafe {
+                                std::slice::from_raw_parts_mut(arg_start as *mut u8, len)
+                            };
                             for t in targets {
                                 if t.is_empty() {
                                     continue;

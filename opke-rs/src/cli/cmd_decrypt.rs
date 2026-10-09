@@ -32,9 +32,9 @@ fn read_stdin_envelope() -> Result<String, OpkeError> {
 fn output_plaintext_to_stdout(plaintext: &[u8]) -> Result<(), OpkeError> {
     if io::stdout().is_terminal() {
         // VULN-72: Warn if binary control characters present
-        let has_control = plaintext.iter().any(|&b| {
-            (b < 0x20 && b != b'\t' && b != b'\n' && b != b'\r') || b == 0x7f
-        });
+        let has_control = plaintext
+            .iter()
+            .any(|&b| (b < 0x20 && b != b'\t' && b != b'\n' && b != b'\r') || b == 0x7f);
         if has_control {
             eprintln!("[!] Warning: Output contains binary control characters. Terminal output may be corrupted. Use --output <file> to save safely.");
         }
@@ -97,8 +97,9 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
             read_stdin_envelope()?
         } else {
             let bytes = read_secure_file(path, MAX_ENVELOPE_CHARS)?;
-            String::from_utf8(bytes.to_vec())
-                .map_err(|e| OpkeError::Validation(format!("Envelope file is not valid UTF-8: {}", e)))?
+            String::from_utf8(bytes.to_vec()).map_err(|e| {
+                OpkeError::Validation(format!("Envelope file is not valid UTF-8: {}", e))
+            })?
         }
     } else if !io::stdin().is_terminal() {
         read_stdin_envelope()?
@@ -180,23 +181,25 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
     );
 
     let t0 = Instant::now();
-    let (key_chacha, key_aes) = derive_key_and_split(
-        passphrase.as_bytes(),
-        &decoded.salt,
-        m_kib,
-        t,
-        p,
-    )?;
+    let (key_chacha, key_aes) =
+        derive_key_and_split(passphrase.as_bytes(), &decoded.salt, m_kib, t, p)?;
 
     // VULN-68: Immediately drop passphrase
     drop(passphrase);
 
     let kdf_elapsed = t0.elapsed();
-    eprintln!("[*] Key derivation completed in {:.2}s.", kdf_elapsed.as_secs_f64());
+    eprintln!(
+        "[*] Key derivation completed in {:.2}s.",
+        kdf_elapsed.as_secs_f64()
+    );
 
     // 5. Decrypt and Authenticate Cascade (VULN-41 AAD binding, VULN-59 unified nonce order)
     let aad = envelope.compute_aad();
-    let aad_ref = if aad.is_empty() { None } else { Some(aad.as_slice()) };
+    let aad_ref = if aad.is_empty() {
+        None
+    } else {
+        Some(aad.as_slice())
+    };
 
     let plaintext = decrypt_cascade(
         &decoded.final_ciphertext,
@@ -219,12 +222,17 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
         } else {
             if std::path::Path::new(out_path).exists() && !args.force {
                 if io::stdin().is_terminal() {
-                    eprint!("[?] Output file '{}' already exists. Overwrite? (y/N): ", out_path);
+                    eprint!(
+                        "[?] Output file '{}' already exists. Overwrite? (y/N): ",
+                        out_path
+                    );
                     io::stderr().flush()?;
                     let mut line = String::new();
                     io::stdin().read_line(&mut line)?;
                     if !line.trim().eq_ignore_ascii_case("y") {
-                        return Err(OpkeError::Validation("Aborted: file already exists.".into()));
+                        return Err(OpkeError::Validation(
+                            "Aborted: file already exists.".into(),
+                        ));
                     }
                 } else {
                     return Err(OpkeError::Validation(format!(

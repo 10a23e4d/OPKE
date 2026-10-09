@@ -81,9 +81,8 @@ pub fn derive_key_and_split(
     };
     let _ = lock_memory(norm_pass.as_ptr(), norm_pass.len());
 
-    let params = Params::new(m_kib, t, p, Some(KEY_LEN)).map_err(|e| {
-        OpkeError::Crypto(format!("Failed to initialize Argon2 params: {}", e))
-    })?;
+    let params = Params::new(m_kib, t, p, Some(KEY_LEN))
+        .map_err(|e| OpkeError::Crypto(format!("Failed to initialize Argon2 params: {}", e)))?;
 
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
