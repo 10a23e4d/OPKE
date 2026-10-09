@@ -1,17 +1,18 @@
 //! Handler for `opke encrypt` subcommand.
 
-use std::io::{self, IsTerminal, Read};
+use std::io::{self, IsTerminal, Read, Write};
 use std::time::Instant;
+use base64::prelude::*;
 use rand::{rngs::OsRng, RngCore};
 use zeroize::Zeroizing;
 
 use crate::core::{
     derive_key_and_split, encrypt_cascade, get_profile, MAX_SECRET_BYTES,
-    MIN_M_KIB, MIN_P, MIN_T, MAX_M_KIB, MAX_P, MAX_T, SALT_LEN,
+    MIN_M_KIB, MIN_P, MIN_T, MAX_M_KIB, MAX_P, MAX_T, NONCE_LEN, SALT_LEN,
 };
 use crate::envelope::create_envelope;
 use crate::error::OpkeError;
-use crate::qr::{generate_qr_image, print_terminal_qr_stderr};
+use crate::qr::{generate_qr_image_with_options, print_terminal_qr_stderr};
 use crate::security::{
     get_available_memory_kib, prompt_passphrase, prompt_secret, read_secure_file,
     scrub_cmdline_targets, scrub_env_passphrase, write_secure_file_with_options,
@@ -138,29 +139,60 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         p,
     )?;
 
+    // Immediately drop passphrase after key derivation (VULN-36, VULN-68)
+    drop(passphrase);
+
     let kdf_elapsed = t0.elapsed();
     eprintln!("[*] Key derivation completed in {:.2}s.", kdf_elapsed.as_secs_f64());
 
-    // 4. Perform Cascade AEAD Encryption
-    let (final_ciphertext, tag_aes, nonce_chacha, nonce_aes) = encrypt_cascade(
+    // 4. Perform Cascade AEAD Encryption with Nonce Preparation & AAD Commitment (VULN-41)
+    let target_version = if args.v2 { 2 } else { 3 };
+    let mut nonce_chacha = [0u8; NONCE_LEN];
+    OsRng.fill_bytes(&mut nonce_chacha);
+    let mut nonce_aes = [0u8; NONCE_LEN];
+    loop {
+        OsRng.fill_bytes(&mut nonce_aes);
+        if nonce_aes != nonce_chacha {
+            break;
+        }
+    }
+
+    let b64_nc = BASE64_STANDARD.encode(nonce_chacha);
+    let b64_na = BASE64_STANDARD.encode(nonce_aes);
+
+    let aad = if target_version == 3 {
+        Some(format!(
+            "opke:v=3:kdf=argon2id:m={}:t={}:p={}:c=chacha20-poly1305+aes-256-gcm:nc={}:na={}",
+            m_kib, t, p, b64_nc, b64_na
+        ).into_bytes())
+    } else {
+        None
+    };
+
+    let (final_ciphertext, tag_aes, n_chacha, n_aes) = encrypt_cascade(
         secret_bytes.as_slice(),
         &key_chacha,
         &key_aes,
-        None,
-        None,
+        Some(nonce_chacha),
+        Some(nonce_aes),
+        aad.as_deref(),
     )?;
 
-    // 5. Build Envelope (version 3)
+    // Immediately drop subkeys after cascade encryption (VULN-69)
+    drop(key_chacha);
+    drop(key_aes);
+
+    // 5. Build Envelope
     let envelope = create_envelope(
         &salt,
         m_kib,
         t,
         p,
-        &nonce_chacha,
-        &nonce_aes,
+        &n_chacha,
+        &n_aes,
         &tag_aes,
         &final_ciphertext,
-        Some(3),
+        Some(target_version),
     )?;
 
     let paper_output = envelope.to_paper_format()?;
@@ -168,13 +200,44 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
 
     // 6. Save or Output Envelope
     if let Some(ref out_path) = args.output {
-        let content_to_write = if args.raw {
-            format!("{}\n", raw_b64)
+        if out_path == "-" {
+            // Write to stdout (VULN-61)
+            if args.raw {
+                println!("{}", raw_b64);
+            } else {
+                print!("{}", paper_output);
+            }
         } else {
-            paper_output.clone()
-        };
-        write_secure_file_with_options(out_path, content_to_write.as_bytes(), args.force)?;
-        eprintln!("[+] Encrypted envelope written to: {}", out_path);
+            // Prevent silent overwrite without --force (VULN-47)
+            let p_out = std::path::Path::new(out_path);
+            if p_out.exists() && !args.force {
+                if io::stdin().is_terminal() {
+                    eprintln!("[!] 警告: 出力先ファイル '{}' は既に存在します。", p_out.display());
+                    eprint!("上書きしますか？ (y/N): ");
+                    let _ = io::stderr().flush();
+                    let mut ans = String::new();
+                    let _ = io::stdin().read_line(&mut ans);
+                    if !ans.trim().eq_ignore_ascii_case("y") {
+                        return Err(OpkeError::Validation(
+                            "既存ファイルの上書きがキャンセルされました。上書きを強制するには '--force' を指定してください。".into(),
+                        ));
+                    }
+                } else {
+                    return Err(OpkeError::Validation(format!(
+                        "出力先ファイル '{}' は既に存在します。上書きするには '--force' を指定してください。",
+                        p_out.display()
+                    )));
+                }
+            }
+
+            let content_to_write = if args.raw {
+                format!("{}\n", raw_b64)
+            } else {
+                paper_output.clone()
+            };
+            write_secure_file_with_options(out_path, content_to_write.as_bytes(), args.force)?;
+            eprintln!("[+] Encrypted envelope written to: {}", out_path);
+        }
     } else {
         if args.raw {
             println!("{}", raw_b64);
@@ -183,9 +246,9 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         }
     }
 
-    // 7. QR Code generation if requested
+    // 7. QR Code generation if requested (propagating force, VULN-32)
     if let Some(ref qr_path) = args.qr {
-        generate_qr_image(&raw_b64, qr_path)?;
+        generate_qr_image_with_options(&raw_b64, qr_path, args.force)?;
         eprintln!("[+] QR Code image saved to: {}", qr_path);
     }
 

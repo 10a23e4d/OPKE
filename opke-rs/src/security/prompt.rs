@@ -7,9 +7,61 @@ use zeroize::Zeroizing;
 use crate::core::MAX_PASSPHRASE_BYTES;
 use crate::error::OpkeError;
 
+#[cfg(windows)]
+extern "system" {
+    fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
+    fn GetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, lpMode: *mut u32) -> i32;
+    fn SetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, dwMode: u32) -> i32;
+}
+
+#[cfg(windows)]
+const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+
+/// RAII Guard ensuring terminal echo is restored even if interrupted or panicked (VULN-58).
+struct TerminalEchoGuard {
+    #[cfg(windows)]
+    orig: Option<(*mut std::ffi::c_void, u32)>,
+}
+
+impl TerminalEchoGuard {
+    fn new() -> Self {
+        #[cfg(windows)]
+        {
+            unsafe {
+                let h = GetStdHandle(STD_INPUT_HANDLE);
+                if !h.is_null() && h as isize != -1 {
+                    let mut mode = 0u32;
+                    if GetConsoleMode(h, &mut mode) != 0 {
+                        return Self { orig: Some((h, mode)) };
+                    }
+                }
+            }
+            Self { orig: None }
+        }
+        #[cfg(not(windows))]
+        {
+            Self {}
+        }
+    }
+}
+
+impl Drop for TerminalEchoGuard {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            if let Some((h, mode)) = self.orig {
+                unsafe {
+                    SetConsoleMode(h, mode);
+                }
+            }
+        }
+    }
+}
+
 /// Safely prompts for a passphrase without echoing characters to terminal.
 /// Both initial and confirmation entries are zeroized upon drop even if errors or mismatches occur.
 pub fn prompt_passphrase(confirm: bool) -> Result<Zeroizing<String>, OpkeError> {
+    let _echo_guard = TerminalEchoGuard::new();
     eprint!("Enter passphrase: ");
     let p1 = Zeroizing::new(
         rpassword::read_password()
@@ -69,8 +121,9 @@ pub fn prompt_secret(multiline: bool, max_bytes: usize) -> Result<Zeroizing<Vec<
         }
         Ok(buf)
     } else {
+        let _echo_guard = TerminalEchoGuard::new();
         eprint!("Enter secret plaintext (hidden): ");
-        let s = Zeroizing::new(
+        let mut s = Zeroizing::new(
             rpassword::read_password()
                 .map_err(|e| OpkeError::Validation(format!("Failed to read secret: {}", e)))?,
         );
@@ -84,7 +137,9 @@ pub fn prompt_secret(multiline: bool, max_bytes: usize) -> Result<Zeroizing<Vec<
                 max_bytes
             )));
         }
-        let bytes = Zeroizing::new(s.as_bytes().to_vec());
+        // VULN-46: Avoid extra heap cloning by converting underlying String to Vec in-place
+        let vec = std::mem::take(&mut *s).into_bytes();
+        let bytes = Zeroizing::new(vec);
         Ok(bytes)
     }
 }

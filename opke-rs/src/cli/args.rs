@@ -29,6 +29,7 @@ pub enum Commands {
 #[derive(Args, Debug)]
 pub struct EncryptArgs {
     /// Secret plaintext to encrypt (Rejected for security: use interactive prompt, pipe, or -i)
+    #[arg(conflicts_with = "input_file")]
     pub secret: Option<String>,
 
     /// Read secret plaintext from a file
@@ -75,6 +76,10 @@ pub struct EncryptArgs {
     #[arg(long = "multiline")]
     pub multiline: bool,
 
+    /// Output legacy v2 envelope format
+    #[arg(long = "v2")]
+    pub v2: bool,
+
     /// Bypass available memory check and force execution
     #[arg(long = "force")]
     pub force: bool,
@@ -83,6 +88,7 @@ pub struct EncryptArgs {
 #[derive(Args, Debug)]
 pub struct DecryptArgs {
     /// Encrypted envelope string or Base64 payload
+    #[arg(allow_hyphen_values = true, conflicts_with = "input_file")]
     pub input: Option<String>,
 
     /// Read encrypted envelope from a file
@@ -109,6 +115,10 @@ pub struct DecryptArgs {
     #[arg(long = "max-threads", allow_hyphen_values = true)]
     pub max_threads: Option<i64>,
 
+    /// Allow decrypting legacy v2 envelopes
+    #[arg(long = "allow-v2")]
+    pub allow_v2: bool,
+
     /// Bypass available memory check and force execution
     #[arg(long = "force")]
     pub force: bool,
@@ -117,6 +127,7 @@ pub struct DecryptArgs {
 #[derive(Args, Debug)]
 pub struct InspectArgs {
     /// Encrypted envelope string or Base64 payload
+    #[arg(allow_hyphen_values = true, conflicts_with = "input_file")]
     pub input: Option<String>,
 
     /// Read encrypted envelope from a file

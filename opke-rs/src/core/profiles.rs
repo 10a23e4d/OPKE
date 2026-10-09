@@ -49,6 +49,7 @@ pub fn get_profile(name: &str) -> Option<KdfProfile> {
         "standard" => Some(PROFILE_STANDARD),
         "moderate" => Some(PROFILE_MODERATE),
         "fast" => Some(PROFILE_FAST),
+        #[cfg(test)]
         "test" => Some(PROFILE_TEST),
         _ => None,
     }

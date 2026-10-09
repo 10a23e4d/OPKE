@@ -119,6 +119,7 @@ fn test_v13_cli_arguments_secrets_rejected() {
         qr_term: false,
         raw: false,
         multiline: false,
+        v2: false,
         force: false,
     };
     let res = cmd_encrypt::execute(enc_args_secret);
@@ -143,6 +144,7 @@ fn test_v13_cli_arguments_secrets_rejected() {
         qr_term: false,
         raw: false,
         multiline: false,
+        v2: false,
         force: false,
     };
     let res_pass = cmd_encrypt::execute(enc_args_pass);
@@ -162,6 +164,7 @@ fn test_v13_cli_arguments_secrets_rejected() {
         max_mem: None,
         max_time: None,
         max_threads: None,
+        allow_v2: false,
         force: false,
     };
     let res_dec = cmd_decrypt::execute(dec_args_pass);
@@ -383,6 +386,7 @@ fn test_v23_encrypt_profile_typo_rejected() {
         qr_term: false,
         raw: false,
         multiline: false,
+        v2: false,
         force: false,
     };
     let res = cmd_encrypt::execute(enc_args);
@@ -409,6 +413,7 @@ fn test_v25_decrypt_limit_bounds_rejected() {
         max_mem: Some(-10),
         max_time: None,
         max_threads: None,
+        allow_v2: false,
         force: false,
     };
     let res = cmd_decrypt::execute(dec_neg_mem);
@@ -424,6 +429,7 @@ fn test_v25_decrypt_limit_bounds_rejected() {
         max_mem: None,
         max_time: Some(0),
         max_threads: None,
+        allow_v2: false,
         force: false,
     };
     let res_t = cmd_decrypt::execute(dec_zero_t);
@@ -439,6 +445,7 @@ fn test_v25_decrypt_limit_bounds_rejected() {
         max_mem: None,
         max_time: None,
         max_threads: Some(0),
+        allow_v2: false,
         force: false,
     };
     let res_p = cmd_decrypt::execute(dec_zero_p);

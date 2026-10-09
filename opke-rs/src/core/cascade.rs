@@ -3,7 +3,7 @@
 //! Layer 2: AES-256-GCM
 
 use aes_gcm::{
-    aead::{Aead, KeyInit},
+    aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Key as AesKey, Nonce as AesNonce,
 };
 use chacha20poly1305::{ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce};
@@ -20,15 +20,17 @@ pub const MIN_CIPHERTEXT_BYTES: usize = 17; // 1-byte plaintext + 16-byte Poly13
 pub const MAX_SECRET_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 pub const MAX_CIPHERTEXT_BYTES: usize = MAX_SECRET_BYTES + TAG_LEN;
 
-/// Encrypts plaintext using dual AEAD cascade (ChaCha20-Poly1305 + AES-256-GCM).
+/// Encrypts plaintext using dual AEAD cascade (ChaCha20-Poly1305 + AES-256-GCM) with optional AAD.
 ///
 /// Returns `(final_ciphertext, tag_aes, nonce_chacha, nonce_aes)`.
+#[allow(clippy::type_complexity)]
 pub fn encrypt_cascade(
     plaintext: &[u8],
     key_chacha: &[u8; SUBKEY_LEN],
     key_aes: &[u8; SUBKEY_LEN],
     nonce_chacha: Option<[u8; NONCE_LEN]>,
     nonce_aes: Option<[u8; NONCE_LEN]>,
+    aad: Option<&[u8]>,
 ) -> Result<(Vec<u8>, [u8; TAG_LEN], [u8; NONCE_LEN], [u8; NONCE_LEN]), OpkeError> {
     if plaintext.is_empty() {
         return Err(OpkeError::Validation("Plaintext cannot be empty.".into()));
@@ -75,6 +77,8 @@ pub fn encrypt_cascade(
         }
     };
 
+    let aad_bytes = aad.unwrap_or(b"");
+
     // Layer 1: ChaCha20-Poly1305
     let chacha_key = ChaChaKey::from_slice(key_chacha);
     let chacha_cipher = ChaCha20Poly1305::new(chacha_key);
@@ -82,7 +86,7 @@ pub fn encrypt_cascade(
 
     let l1_blob = Zeroizing::new(
         chacha_cipher
-            .encrypt(chacha_nonce, plaintext)
+            .encrypt(chacha_nonce, Payload { msg: plaintext, aad: aad_bytes })
             .map_err(|e| OpkeError::Crypto(format!("Layer 1 (ChaCha20-Poly1305) encryption failed: {}", e)))?,
     );
 
@@ -92,7 +96,7 @@ pub fn encrypt_cascade(
     let aes_nonce = AesNonce::from_slice(&n_aes);
 
     let mut l2_blob = aes_cipher
-        .encrypt(aes_nonce, l1_blob.as_slice())
+        .encrypt(aes_nonce, Payload { msg: l1_blob.as_slice(), aad: aad_bytes })
         .map_err(|e| OpkeError::Crypto(format!("Layer 2 (AES-256-GCM) encryption failed: {}", e)))?;
 
     if l2_blob.len() < TAG_LEN {
@@ -108,15 +112,16 @@ pub fn encrypt_cascade(
 }
 
 /// Decrypts ciphertext through inverse dual AEAD cascade (Layer 2 AES-256-GCM then Layer 1 ChaCha20-Poly1305).
-///
+/// Order of nonces matches encrypt_cascade (nonce_chacha then nonce_aes) (VULN-59).
 /// Returns zeroized plaintext buffer.
 pub fn decrypt_cascade(
     final_ciphertext: &[u8],
     tag_aes: &[u8; TAG_LEN],
-    nonce_aes: &[u8; NONCE_LEN],
     nonce_chacha: &[u8; NONCE_LEN],
+    nonce_aes: &[u8; NONCE_LEN],
     key_chacha: &[u8; SUBKEY_LEN],
     key_aes: &[u8; SUBKEY_LEN],
+    aad: Option<&[u8]>,
 ) -> Result<Zeroizing<Vec<u8>>, OpkeError> {
     if final_ciphertext.len() < MIN_CIPHERTEXT_BYTES {
         return Err(OpkeError::Validation(format!(
@@ -142,6 +147,8 @@ pub fn decrypt_cascade(
         ));
     }
 
+    let aad_bytes = aad.unwrap_or(b"");
+
     // Layer 2: AES-256-GCM Decryption
     let aes_key = AesKey::<Aes256Gcm>::from_slice(key_aes);
     let aes_cipher = Aes256Gcm::new(aes_key);
@@ -151,15 +158,20 @@ pub fn decrypt_cascade(
     l2_payload.extend_from_slice(final_ciphertext);
     l2_payload.extend_from_slice(tag_aes);
 
-    let l1_blob = Zeroizing::new(aes_cipher.decrypt(aes_nonce, l2_payload.as_slice()).map_err(|_| {
-        OpkeError::Authentication(
-            "Decryption failed: Layer 2 (AES-GCM) authentication tag verification failed. Invalid passphrase or corrupted data.".into(),
-        )
-    })?);
+    // Uniform authentication failure message to eliminate multi-layer oracle (VULN-42)
+    let l1_blob = Zeroizing::new(
+        aes_cipher
+            .decrypt(aes_nonce, Payload { msg: l2_payload.as_slice(), aad: aad_bytes })
+            .map_err(|_| {
+                OpkeError::Authentication(
+                    "Decryption failed: authentication failed. Invalid passphrase or corrupted data.".into(),
+                )
+            })?,
+    );
 
     if l1_blob.len() < MIN_CIPHERTEXT_BYTES {
         return Err(OpkeError::Authentication(
-            "Decryption failed: Layer 1 blob truncated.".into(),
+            "Decryption failed: authentication failed. Invalid passphrase or corrupted data.".into(),
         ));
     }
 
@@ -170,10 +182,10 @@ pub fn decrypt_cascade(
 
     let plaintext = Zeroizing::new(
         chacha_cipher
-            .decrypt(chacha_nonce, l1_blob.as_slice())
+            .decrypt(chacha_nonce, Payload { msg: l1_blob.as_slice(), aad: aad_bytes })
             .map_err(|_| {
                 OpkeError::Authentication(
-                    "Decryption failed: Layer 1 (ChaCha20-Poly1305) authentication tag verification failed. Invalid passphrase or corrupted data.".into(),
+                    "Decryption failed: authentication failed. Invalid passphrase or corrupted data.".into(),
                 )
             })?,
     );

@@ -3,9 +3,9 @@ target/
 **/target/
 **/*.rs.bk
 
-# Prebuilt binaries (allow bin/opke.exe)
-!bin/
-!bin/opke.exe
+# Prebuilt binaries and executable artifacts (VULN-64)
+bin/
+*.exe
 
 # Output and temporary files
 *.png

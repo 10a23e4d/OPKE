@@ -37,7 +37,7 @@ fn test_encrypt_decrypt_roundtrip_various_payloads() {
 
     for secret in payloads {
         let (ct, tag, n_chacha, n_aes) =
-            encrypt_cascade(secret, &key_chacha, &key_aes, None, None).unwrap();
+            encrypt_cascade(secret, &key_chacha, &key_aes, None, None, None).unwrap();
 
         assert_eq!(n_chacha.len(), 12);
         assert_eq!(n_aes.len(), 12);
@@ -46,7 +46,7 @@ fn test_encrypt_decrypt_roundtrip_various_payloads() {
         assert!(!ct.is_empty());
 
         let decrypted =
-            decrypt_cascade(&ct, &tag, &n_aes, &n_chacha, &key_chacha, &key_aes).unwrap();
+            decrypt_cascade(&ct, &tag, &n_chacha, &n_aes, &key_chacha, &key_aes, None).unwrap();
 
         assert_eq!(decrypted.as_slice(), secret);
     }
@@ -59,14 +59,14 @@ fn test_tamper_detection_layer2() {
     let key_aes = [22u8; 32];
 
     let (mut ct, tag, n_chacha, n_aes) =
-        encrypt_cascade(secret, &key_chacha, &key_aes, None, None).unwrap();
+        encrypt_cascade(secret, &key_chacha, &key_aes, None, None, None).unwrap();
 
     // Flip 1 bit in ciphertext
     ct[0] ^= 0x01;
-    let err = decrypt_cascade(&ct, &tag, &n_aes, &n_chacha, &key_chacha, &key_aes);
+    let err = decrypt_cascade(&ct, &tag, &n_chacha, &n_aes, &key_chacha, &key_aes, None);
     assert!(err.is_err());
     let err_msg = err.unwrap_err().to_string();
-    assert!(err_msg.contains("Layer 2 (AES-GCM) authentication tag verification failed"));
+    assert!(err_msg.contains("authentication failed"));
 }
 
 #[test]

@@ -1,10 +1,10 @@
-//! Argon2id Key Derivation Function (KDF) implementation.
-
 use argon2::{Algorithm, Argon2, Params, Version};
 use subtle::ConstantTimeEq;
+use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroizing;
 
 use crate::error::OpkeError;
+use crate::security::memory::lock_memory;
 
 pub const SALT_LEN: usize = 16;
 pub const KEY_LEN: usize = 64;
@@ -19,8 +19,10 @@ pub const MAX_P: u32 = 256;
 pub const MAX_PASSPHRASE_BYTES: usize = 4096;
 
 /// Derives a 64-byte key using Argon2id (v0x13) and splits it into two 32-byte keys.
+/// Normalizes passphrase to Unicode NFC if valid UTF-8 (VULN-55) and locks derived keys in RAM (VULN-54).
 ///
 /// Returns `(Key_ChaCha, Key_AES)`, both zeroized on drop.
+#[allow(clippy::type_complexity)]
 pub fn derive_key_and_split(
     passphrase: &[u8],
     salt: &[u8],
@@ -44,19 +46,19 @@ pub fn derive_key_and_split(
             salt.len()
         )));
     }
-    if p < MIN_P || p > MAX_P {
+    if !(MIN_P..=MAX_P).contains(&p) {
         return Err(OpkeError::Validation(format!(
             "Parallelism must be between {} and {}, got {}",
             MIN_P, MAX_P, p
         )));
     }
-    if t < MIN_T || t > MAX_T {
+    if !(MIN_T..=MAX_T).contains(&t) {
         return Err(OpkeError::Validation(format!(
             "Time cost must be between {} and {}, got {}",
             MIN_T, MAX_T, t
         )));
     }
-    if m_kib < MIN_M_KIB || m_kib > MAX_M_KIB {
+    if !(MIN_M_KIB..=MAX_M_KIB).contains(&m_kib) {
         return Err(OpkeError::Validation(format!(
             "Memory cost must be between {} KiB and {} KiB, got {} KiB",
             MIN_M_KIB, MAX_M_KIB, m_kib
@@ -70,6 +72,15 @@ pub fn derive_key_and_split(
         )));
     }
 
+    // Unicode NFC Normalization (VULN-55)
+    let norm_pass: Zeroizing<Vec<u8>> = if let Ok(s) = std::str::from_utf8(passphrase) {
+        let nfc_string: String = s.nfc().collect();
+        Zeroizing::new(nfc_string.into_bytes())
+    } else {
+        Zeroizing::new(passphrase.to_vec())
+    };
+    let _ = lock_memory(norm_pass.as_ptr(), norm_pass.len());
+
     let params = Params::new(m_kib, t, p, Some(KEY_LEN)).map_err(|e| {
         OpkeError::Crypto(format!("Failed to initialize Argon2 params: {}", e))
     })?;
@@ -77,12 +88,16 @@ pub fn derive_key_and_split(
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
     let mut out_key = Zeroizing::new([0u8; KEY_LEN]);
+    let _ = lock_memory(out_key.as_ptr(), KEY_LEN);
+
     argon2
-        .hash_password_into(passphrase, salt, &mut *out_key)
+        .hash_password_into(&norm_pass, salt, &mut *out_key)
         .map_err(|e| OpkeError::Crypto(format!("Argon2id derivation failed: {}", e)))?;
 
     let mut key_chacha = Zeroizing::new([0u8; SUBKEY_LEN]);
     let mut key_aes = Zeroizing::new([0u8; SUBKEY_LEN]);
+    let _ = lock_memory(key_chacha.as_ptr(), SUBKEY_LEN);
+    let _ = lock_memory(key_aes.as_ptr(), SUBKEY_LEN);
 
     key_chacha.copy_from_slice(&out_key[..SUBKEY_LEN]);
     key_aes.copy_from_slice(&out_key[SUBKEY_LEN..]);

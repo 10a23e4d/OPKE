@@ -31,6 +31,22 @@ extern "system" {
         lpFileInformation: *mut BY_HANDLE_FILE_INFORMATION,
     ) -> i32;
     fn LocalFree(hMem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    fn LockFile(
+        hFile: *mut std::ffi::c_void,
+        dwFileOffsetLow: u32,
+        dwFileOffsetHigh: u32,
+        nNumberOfBytesToLockLow: u32,
+        nNumberOfBytesToLockHigh: u32,
+    ) -> i32;
+    fn UnlockFile(
+        hFile: *mut std::ffi::c_void,
+        dwFileOffsetLow: u32,
+        dwFileOffsetHigh: u32,
+        nNumberOfBytesToLockLow: u32,
+        nNumberOfBytesToLockHigh: u32,
+    ) -> i32;
+    fn GetCurrentProcess() -> *mut std::ffi::c_void;
+    fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
 }
 
 #[cfg(windows)]
@@ -48,8 +64,18 @@ extern "system" {
         pDacl: *mut *mut std::ffi::c_void,
         lpbDaclDefaulted: *mut i32,
     ) -> i32;
-    fn SetNamedSecurityInfoW(
-        pObjectName: *const u16,
+    fn GetSecurityInfo(
+        handle: *mut std::ffi::c_void,
+        ObjectType: i32,
+        SecurityInfo: u32,
+        ppsidOwner: *mut *mut std::ffi::c_void,
+        ppsidGroup: *mut *mut std::ffi::c_void,
+        ppDacl: *mut *mut std::ffi::c_void,
+        ppSacl: *mut *mut std::ffi::c_void,
+        ppSecurityDescriptor: *mut *mut std::ffi::c_void,
+    ) -> u32;
+    fn SetSecurityInfo(
+        handle: *mut std::ffi::c_void,
         ObjectType: i32,
         SecurityInfo: u32,
         psidOwner: *mut std::ffi::c_void,
@@ -57,14 +83,71 @@ extern "system" {
         pDacl: *mut std::ffi::c_void,
         pSacl: *mut std::ffi::c_void,
     ) -> u32;
+    fn OpenProcessToken(
+        ProcessHandle: *mut std::ffi::c_void,
+        DesiredAccess: u32,
+        TokenHandle: *mut *mut std::ffi::c_void,
+    ) -> i32;
+    fn GetTokenInformation(
+        TokenHandle: *mut std::ffi::c_void,
+        TokenInformationClass: i32,
+        TokenInformation: *mut std::ffi::c_void,
+        TokenInformationLength: u32,
+        ReturnLength: *mut u32,
+    ) -> i32;
+    fn EqualSid(pSid1: *mut std::ffi::c_void, pSid2: *mut std::ffi::c_void) -> i32;
+}
+
+/// Validates file path against NTFS Alternate Data Streams (ADS) and Windows reserved device names (VULN-39, VULN-40).
+fn validate_file_path(p: &Path) -> Result<(), OpkeError> {
+    let s = p.to_string_lossy();
+    if s.is_empty() {
+        return Err(OpkeError::Validation("Invalid file path.".into()));
+    }
+
+    // 1. Check for NTFS Alternate Data Streams (ADS: filename:stream)
+    // Allow standard Windows drive specifier (e.g., C:\ or D:/)
+    let rest_path = if s.len() >= 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic() {
+        &s[2..]
+    } else {
+        &s[..]
+    };
+    if rest_path.contains(':') {
+        return Err(OpkeError::Validation(format!(
+            "NTFS Alternate Data Streams (ADS) are prohibited for security: {}",
+            p.display()
+        )));
+    }
+
+    // 2. Check for Windows reserved device names (CON, NUL, AUX, PRN, COM1-9, LPT1-9)
+    if let Some(file_name) = p.file_name().and_then(|f| f.to_str()) {
+        let stem = std::path::Path::new(file_name)
+            .file_stem()
+            .and_then(|st| st.to_str())
+            .unwrap_or(file_name)
+            .to_ascii_uppercase();
+
+        let reserved = [
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        ];
+        if reserved.contains(&stem.as_str()) {
+            return Err(OpkeError::Validation(format!(
+                "Windows reserved device names are prohibited for security: {}",
+                p.display()
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 /// Reads a regular file into a zeroized byte buffer, strictly refusing symlinks, FIFOs, and non-regular files.
 pub fn read_secure_file(path: impl AsRef<Path>, max_bytes: usize) -> Result<Zeroizing<Vec<u8>>, OpkeError> {
     let p = path.as_ref();
-    if p.as_os_str().is_empty() {
-        return Err(OpkeError::Validation("Invalid file path.".into()));
-    }
+    validate_file_path(p)?;
+
     if !p.exists() {
         return Err(OpkeError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -105,6 +188,12 @@ pub fn read_secure_file(path: impl AsRef<Path>, max_bytes: usize) -> Result<Zero
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
 
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0x00000001 | 0x00000002 | 0x00000004); // FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+    }
+
     let mut file = options.open(p)?;
 
     // Verify metadata on the opened file descriptor to prevent TOCTOU race
@@ -116,7 +205,8 @@ pub fn read_secure_file(path: impl AsRef<Path>, max_bytes: usize) -> Result<Zero
         )));
     }
 
-    let mut buf = Zeroizing::new(Vec::with_capacity(file_len.min(65536)));
+    // Fully preallocate buffer with exact file length to eliminate reallocation plaintext leak (VULN-28)
+    let mut buf = Zeroizing::new(Vec::with_capacity(file_len));
     let mut chunk = Zeroizing::new([0u8; 65536]);
 
     loop {
@@ -150,9 +240,7 @@ pub fn write_secure_file_with_options(
     force: bool,
 ) -> Result<(), OpkeError> {
     let p = path.as_ref();
-    if p.as_os_str().is_empty() {
-        return Err(OpkeError::Validation("Invalid file path.".into()));
-    }
+    validate_file_path(p)?;
 
     let existed_before = std::fs::symlink_metadata(p).is_ok();
 
@@ -172,15 +260,28 @@ pub fn write_secure_file_with_options(
         }
     }
 
-    // Notice: truncate(true) is omitted to avoid truncating existing target before validations
     let mut options = OpenOptions::new();
-    options.write(true).create(true);
+    options.write(true);
+    if existed_before {
+        options.create(true);
+    } else {
+        // VULN-57: Use CREATE_NEW for new files to prevent TOCTOU race
+        options.create_new(true);
+    }
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
         options.mode(0o600);
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // GENERIC_READ (0x80000000) | GENERIC_WRITE (0x40000000) | WRITE_DAC (0x00040000)
+        options.access_mode(0x80000000 | 0x40000000 | 0x00040000);
+        options.share_mode(0x00000001 | 0x00000002 | 0x00000004); // FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
     }
 
     let mut file = options.open(p)?;
@@ -217,6 +318,10 @@ pub fn write_secure_file_with_options(
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o600);
         let _ = file.set_permissions(perms);
+
+        // VULN-62: Advisory/mandatory file lock on Unix
+        use std::os::unix::io::AsRawFd;
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX); }
     }
 
     #[cfg(windows)]
@@ -235,7 +340,59 @@ pub fn write_secure_file_with_options(
             }
         }
 
-        // Apply owner-only DACL (D:P(A;;FA;;;OW) -> Protected DACL, Full Access to Owner)
+        if existed_before {
+            // VULN-67: Verify owner SID of existing file matches current process user SID
+            let mut owner_sid: *mut std::ffi::c_void = std::ptr::null_mut();
+            let mut file_sd: *mut std::ffi::c_void = std::ptr::null_mut();
+            let ret = unsafe {
+                GetSecurityInfo(
+                    handle as *mut _,
+                    1, // SE_FILE_OBJECT
+                    0x00000001, // OWNER_SECURITY_INFORMATION
+                    &mut owner_sid,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut file_sd,
+                )
+            };
+            if ret == 0 && !owner_sid.is_null() {
+                let mut token_handle: *mut std::ffi::c_void = std::ptr::null_mut();
+                let token_ok = unsafe {
+                    OpenProcessToken(GetCurrentProcess(), 0x0008, &mut token_handle) // TOKEN_QUERY
+                };
+                if token_ok != 0 && !token_handle.is_null() {
+                    let mut token_user_buf = [0u8; 256];
+                    let mut ret_len = 0u32;
+                    let info_ok = unsafe {
+                        GetTokenInformation(
+                            token_handle,
+                            1, // TokenUser
+                            token_user_buf.as_mut_ptr() as *mut _,
+                            token_user_buf.len() as u32,
+                            &mut ret_len,
+                        )
+                    };
+                    unsafe { CloseHandle(token_handle); }
+                    if info_ok != 0 {
+                        let token_user_sid = unsafe {
+                            std::ptr::read_unaligned(token_user_buf.as_ptr() as *const *mut std::ffi::c_void)
+                        };
+                        let same = unsafe { EqualSid(owner_sid, token_user_sid) };
+                        if same == 0 {
+                            unsafe { LocalFree(file_sd); }
+                            return Err(OpkeError::Validation(format!(
+                                "Refusing to write to file owned by another user (Windows SID mismatch): {}",
+                                p.display()
+                            )));
+                        }
+                    }
+                }
+                unsafe { LocalFree(file_sd); }
+            }
+        }
+
+        // Apply owner-only DACL using handle-based SetSecurityInfo to prevent TOCTOU symlink race (VULN-34)
         let sddl: Vec<u16> = "D:P(A;;FA;;;OW)\0".encode_utf16().collect();
         let mut sd = std::ptr::null_mut();
         let mut sd_size = 0u32;
@@ -257,11 +414,9 @@ pub fn write_secure_file_with_options(
                 GetSecurityDescriptorDacl(sd, &mut dacl_present, &mut dacl, &mut dacl_defaulted)
             };
             if get_ok != 0 && dacl_present != 0 {
-                use std::os::windows::ffi::OsStrExt;
-                let p_wide: Vec<u16> = p.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
                 let set_res = unsafe {
-                    SetNamedSecurityInfoW(
-                        p_wide.as_ptr(),
+                    SetSecurityInfo(
+                        handle as *mut _,
                         1, // SE_FILE_OBJECT
                         0x00000004 | 0x80000000, // DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
                         std::ptr::null_mut(),
@@ -294,43 +449,48 @@ pub fn write_secure_file_with_options(
                     ));
                 }
             } else if force {
-                eprintln!("[!] 警告: 保存先ファイルシステムがWindowsアクセス制御（ACL）に対応していませんが、--force が指定されているため続行します。");
+                eprintln!("[!] 警告: 保存先ファイルシステムがWindowsアクセス制御（ACL）に対応していません。--force が指定されているため続行します。");
             } else {
                 return Err(OpkeError::Validation(
                     "保存先ファイルシステムがWindowsアクセス制御（ACL）に対応していません。非対話実行で続行するには '--force' を指定してください。".into(),
                 ));
             }
         }
+
+        // VULN-62: Mandatory file locking on Windows
+        unsafe { LockFile(handle as *mut _, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF); }
     }
 
-    // Safely truncate existing target now that validations have succeeded
-    file.set_len(0)?;
+    // Write data and truncate afterwards to protect existing file on write error (VULN-29)
     file.rewind()?;
+    let write_result = (|| -> Result<(), OpkeError> {
+        file.write_all(data)?;
+        file.set_len(data.len() as u64)?;
+        file.flush()?;
+        file.sync_all()?;
+        Ok(())
+    })();
 
-    // RAII guard to unlink incomplete file if an error or panic occurs during writing
-    struct CleanupGuard<'a> {
-        path: &'a Path,
-        should_cleanup: bool,
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        unsafe { UnlockFile(file.as_raw_handle() as *mut _, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF); }
     }
-    impl<'a> Drop for CleanupGuard<'a> {
-        fn drop(&mut self) {
-            if self.should_cleanup {
-                let _ = std::fs::remove_file(self.path);
-            }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN); }
+    }
+
+    // Close the file handle explicitly before cleanup to eliminate ERROR_SHARING_VIOLATION on Windows (VULN-30)
+    drop(file);
+
+    if let Err(e) = write_result {
+        if !existed_before {
+            let _ = std::fs::remove_file(p);
         }
+        return Err(e);
     }
-
-    let mut guard = CleanupGuard {
-        path: p,
-        should_cleanup: !existed_before,
-    };
-
-    file.write_all(data)?;
-    file.flush()?;
-    file.sync_all()?;
-
-    // Successfully written; do not remove file
-    guard.should_cleanup = false;
 
     Ok(())
 }

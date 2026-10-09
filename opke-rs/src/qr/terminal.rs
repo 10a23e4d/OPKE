@@ -50,13 +50,14 @@ pub fn print_terminal_qr<W: Write>(data: &str, mut out: W) -> Result<(), OpkeErr
         }
     };
 
-    // Render using Unicode half-blocks:
+    // Render using Unicode half-blocks with ANSI white background (47) and black foreground (30)
+    // to guarantee standard QR code polarity on both dark and light terminal themes (VULN-53).
     // ▀ (upper dark, lower light)
     // ▄ (upper light, lower dark)
     // █ (both dark)
     // ' ' (both light)
-    // Using white background (light) and black foreground (dark).
     for y in (0..total_height).step_by(2) {
+        write!(out, "\x1b[47m\x1b[30m").map_err(OpkeError::Io)?;
         for x in 0..total_width {
             let top_dark = is_dark(x, y);
             let bottom_dark = if y + 1 < total_height {
@@ -73,7 +74,7 @@ pub fn print_terminal_qr<W: Write>(data: &str, mut out: W) -> Result<(), OpkeErr
             };
             write!(out, "{}", ch).map_err(OpkeError::Io)?;
         }
-        writeln!(out).map_err(OpkeError::Io)?;
+        writeln!(out, "\x1b[0m").map_err(OpkeError::Io)?;
     }
 
     out.flush().map_err(OpkeError::Io)?;

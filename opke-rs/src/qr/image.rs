@@ -5,13 +5,22 @@ use image::{Rgb, RgbImage};
 use qrcode::{render::svg, Color, EcLevel, QrCode};
 
 use crate::error::OpkeError;
-use crate::security::write_secure_file;
+use crate::security::write_secure_file_with_options;
 
 pub const MAX_QR_CAPACITY_BYTES: usize = 2953;
 
 /// Generates a PNG or SVG QR code image file from string data.
 /// Attempts generation with Level H, falling back to Level Q, Level M, Level L if size requires.
 pub fn generate_qr_image(data: &str, output_path: impl AsRef<Path>) -> Result<(), OpkeError> {
+    generate_qr_image_with_options(data, output_path, false)
+}
+
+/// Generates a PNG or SVG QR code image file with explicit --force override for ACLs (VULN-32).
+pub fn generate_qr_image_with_options(
+    data: &str,
+    output_path: impl AsRef<Path>,
+    force: bool,
+) -> Result<(), OpkeError> {
     let p = output_path.as_ref();
     if p.as_os_str().is_empty() || p.to_string_lossy().trim().is_empty() {
         return Err(OpkeError::Validation("Invalid output_path: path cannot be empty.".into()));
@@ -75,7 +84,7 @@ pub fn generate_qr_image(data: &str, output_path: impl AsRef<Path>) -> Result<()
             .dark_color(svg::Color("#000000"))
             .light_color(svg::Color("#ffffff"))
             .build();
-        write_secure_file(p, svg_data.as_bytes())?;
+        write_secure_file_with_options(p, svg_data.as_bytes(), force)?;
     } else {
         // High quality pixel rendering matching Python box_size = 10, border = 4
         let width = code.width();
@@ -107,7 +116,7 @@ pub fn generate_qr_image(data: &str, output_path: impl AsRef<Path>) -> Result<()
         )
         .map_err(|e| OpkeError::Crypto(format!("Failed to encode PNG: {}", e)))?;
 
-        write_secure_file(p, &png_bytes)?;
+        write_secure_file_with_options(p, &png_bytes, force)?;
     }
 
     Ok(())

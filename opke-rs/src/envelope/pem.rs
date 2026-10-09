@@ -25,10 +25,11 @@ pub fn to_paper_format(b64_payload: &str, line_length: usize) -> Result<String, 
     output.push('\n');
 
     for chunk in b64_payload.as_bytes().chunks(line_length) {
-        if let Ok(line) = std::str::from_utf8(chunk) {
-            output.push_str(line);
-            output.push('\n');
-        }
+        let line = std::str::from_utf8(chunk).map_err(|e| {
+            OpkeError::Validation(format!("Invalid non-UTF-8 chunk in payload: {}", e))
+        })?;
+        output.push_str(line);
+        output.push('\n');
     }
 
     output.push_str(PEM_FOOTER);

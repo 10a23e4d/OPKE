@@ -1,9 +1,10 @@
 [package]
 name = "opke"
-version = "3.0.0"
+version = "3.0.1"
 edition = "2021"
 authors = ["OPKE Contributors"]
-description = "Offline Paper-Key Encryptor (OPKE) v3.0"
+description = "Offline Paper-Key Encryptor (OPKE) v3.0.1"
+license = "MIT OR Apache-2.0"
 
 [lib]
 name = "opke"
@@ -36,6 +37,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 # CLI & Terminal
 clap = { version = "4.5", features = ["derive", "env"] }
+ctrlc = "3.4"
+
+# Internationalization
+unicode-normalization = "0.1"
 
 # System info (RAM inspection to prevent DoS / OOM)
 sysinfo = "0.33"
@@ -45,3 +50,11 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3.17"
+
+[profile.release]
+overflow-checks = true
+strip = true
+opt-level = 3
+lto = true
+codegen-units = 1
+

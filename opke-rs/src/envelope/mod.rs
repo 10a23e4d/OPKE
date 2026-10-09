@@ -45,8 +45,55 @@ impl OPKEEnvelope {
         pem::to_paper_format(&b64, 64)
     }
 
+    /// Computes Associated Authenticated Data (AAD) for the envelope.
+    /// Returns empty bytes for v2 legacy envelopes, and serialized metadata commitment for v3 (VULN-41).
+    pub fn compute_aad(&self) -> Vec<u8> {
+        if self.v == 2 {
+            Vec::new()
+        } else {
+            format!(
+                "opke:v={}:kdf={}:m={}:t={}:p={}:c={}:nc={}:na={}",
+                self.v,
+                self.kdf.name,
+                self.kdf.m_kib,
+                self.kdf.t,
+                self.kdf.p,
+                self.cipher.layers.join("+"),
+                self.cipher.nonce_chacha,
+                self.cipher.nonce_aes
+            )
+            .into_bytes()
+        }
+    }
+
     /// Decodes and validates all Base64-encoded cryptographic fields.
     pub fn get_decoded_bytes(&self) -> Result<DecodedEnvelopeBytes, OpkeError> {
+        // Pre-validate Base64 string lengths to prevent giant allocations on malformed inputs (VULN-65)
+        if self.kdf.salt.len() > 24 {
+            return Err(OpkeError::Envelope(format!(
+                "Base64 salt length exceeds maximum allowed bound (24 chars, got {}).",
+                self.kdf.salt.len()
+            )));
+        }
+        if self.cipher.nonce_chacha.len() > 16 {
+            return Err(OpkeError::Envelope(format!(
+                "Base64 nonce_chacha length exceeds maximum allowed bound (16 chars, got {}).",
+                self.cipher.nonce_chacha.len()
+            )));
+        }
+        if self.cipher.nonce_aes.len() > 16 {
+            return Err(OpkeError::Envelope(format!(
+                "Base64 nonce_aes length exceeds maximum allowed bound (16 chars, got {}).",
+                self.cipher.nonce_aes.len()
+            )));
+        }
+        if self.cipher.tag_aes.len() > 24 {
+            return Err(OpkeError::Envelope(format!(
+                "Base64 tag_aes length exceeds maximum allowed bound (24 chars, got {}).",
+                self.cipher.tag_aes.len()
+            )));
+        }
+
         let salt_vec = BASE64_STANDARD
             .decode(&self.kdf.salt)
             .map_err(|e| OpkeError::Envelope(format!("Invalid Base64 salt: {}", e)))?;
@@ -143,6 +190,7 @@ impl OPKEEnvelope {
 }
 
 /// Creates a strongly validated OPKEEnvelope instance from raw cryptographic components.
+#[allow(clippy::too_many_arguments)]
 pub fn create_envelope(
     salt: &[u8; SALT_LEN],
     m_kib: u32,
@@ -154,19 +202,19 @@ pub fn create_envelope(
     final_ciphertext: &[u8],
     version: Option<u32>,
 ) -> Result<OPKEEnvelope, OpkeError> {
-    if m_kib < MIN_M_KIB || m_kib > MAX_M_KIB {
+    if !(MIN_M_KIB..=MAX_M_KIB).contains(&m_kib) {
         return Err(OpkeError::Validation(format!(
             "Invalid or out-of-range m_kib: {} (range: {}-{})",
             m_kib, MIN_M_KIB, MAX_M_KIB
         )));
     }
-    if t < MIN_T || t > MAX_T {
+    if !(MIN_T..=MAX_T).contains(&t) {
         return Err(OpkeError::Validation(format!(
             "Invalid or out-of-range t: {} (range: {}-{})",
             t, MIN_T, MAX_T
         )));
     }
-    if p < MIN_P || p > MAX_P {
+    if !(MIN_P..=MAX_P).contains(&p) {
         return Err(OpkeError::Validation(format!(
             "Invalid or out-of-range p: {} (range: {}-{})",
             p, MIN_P, MAX_P
@@ -202,6 +250,15 @@ pub fn create_envelope(
         )));
     }
 
+    if let Some(v) = version {
+        if v != 2 && v != 3 {
+            return Err(OpkeError::Validation(format!(
+                "Invalid envelope version: {}. Supported versions are 2 and 3.",
+                v
+            )));
+        }
+    }
+
     Ok(OPKEEnvelope {
         v: version.unwrap_or(CURRENT_VERSION),
         kdf: KdfParams {
@@ -219,6 +276,75 @@ pub fn create_envelope(
         },
         data: BASE64_STANDARD.encode(final_ciphertext),
     })
+}
+
+/// Validates that a JSON string does not contain duplicate keys in any object (RFC 8259 compliance / VULN-33).
+fn validate_no_duplicate_json_keys(json: &str) -> Result<(), OpkeError> {
+    use std::collections::HashSet;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut current_key = String::new();
+    let mut collecting_key = false;
+    let mut expecting_colon = false;
+    let mut object_stack: Vec<HashSet<String>> = Vec::new();
+
+    for c in json.chars() {
+        if in_string {
+            if escape {
+                escape = false;
+                if collecting_key {
+                    current_key.push(c);
+                }
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+                if collecting_key {
+                    collecting_key = false;
+                    expecting_colon = true;
+                }
+            } else if collecting_key {
+                current_key.push(c);
+            }
+            continue;
+        }
+
+        match c {
+            '"' => {
+                in_string = true;
+                if !expecting_colon && !object_stack.is_empty() {
+                    collecting_key = true;
+                    current_key.clear();
+                }
+            }
+            ':' => {
+                if expecting_colon {
+                    expecting_colon = false;
+                    if let Some(keys) = object_stack.last_mut() {
+                        if !keys.insert(current_key.clone()) {
+                            return Err(OpkeError::Envelope(format!(
+                                "Duplicate JSON key detected: '{}' (RFC 8259 violation)",
+                                current_key
+                            )));
+                        }
+                    }
+                }
+            }
+            '{' => {
+                expecting_colon = false;
+                object_stack.push(HashSet::new());
+            }
+            '}' => {
+                expecting_colon = false;
+                object_stack.pop();
+            }
+            ',' => {
+                expecting_colon = false;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Serializes an OPKEEnvelope to string (either paper PEM format or compact Base64).
@@ -263,6 +389,9 @@ pub fn deserialize_envelope(raw_input: &str) -> Result<OPKEEnvelope, OpkeError> 
         String::from_utf8(decoded)
             .map_err(|e| OpkeError::Envelope(format!("Envelope payload is not valid UTF-8: {}", e)))?
     };
+
+    // Strict duplicate key detection to prevent parser differential attacks (VULN-33)
+    validate_no_duplicate_json_keys(&json_str)?;
 
     // 3. Parse JSON into OPKEEnvelope with strict field verification
     let envelope: OPKEEnvelope = serde_json::from_str(&json_str)
@@ -309,12 +438,17 @@ pub fn deserialize_envelope(raw_input: &str) -> Result<OPKEEnvelope, OpkeError> 
         )));
     }
 
-    // 6. Validate Cipher layers
+    // 6. Validate Cipher layers (bounded error formatting to prevent DoS, VULN-73)
     let expected_layers = vec!["chacha20-poly1305".to_string(), "aes-256-gcm".to_string()];
     if envelope.cipher.layers != expected_layers {
+        let layers_preview = if envelope.cipher.layers.len() > 5 {
+            format!("{:?}...", &envelope.cipher.layers[..5])
+        } else {
+            format!("{:?}", envelope.cipher.layers)
+        };
         return Err(OpkeError::Envelope(format!(
-            "Unsupported cipher layers: {:?}. Expected {:?}",
-            envelope.cipher.layers, expected_layers
+            "Unsupported cipher layers: {}. Expected {:?}",
+            layers_preview, expected_layers
         )));
     }
 

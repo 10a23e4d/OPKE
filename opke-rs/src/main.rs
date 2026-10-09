@@ -7,6 +7,25 @@ use opke::cli::args::{Cli, Commands};
 use opke::cli::{cmd_benchmark, cmd_decrypt, cmd_encrypt, cmd_inspect, wizard};
 
 fn main() {
+    // Disable core dumps and crash report dialogs (WER) to prevent memory dumps to disk (VULN-44)
+    #[cfg(windows)]
+    unsafe {
+        extern "system" {
+            fn SetErrorMode(uMode: u32) -> u32;
+        }
+        SetErrorMode(0x0001 | 0x0002);
+    }
+    #[cfg(unix)]
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0);
+    }
+
+    // Register clean SIGINT/Ctrl+C handler to prevent dangling secrets (VULN-56)
+    let _ = ctrlc::set_handler(move || {
+        eprintln!("\n[!] 中断シグナル (Ctrl+C) を受信しました。終了します。");
+        process::exit(130);
+    });
+
     // If launched without any command-line arguments (e.g. double-clicked from Explorer),
     // launch the interactive wizard mode.
     if std::env::args().len() <= 1 {
