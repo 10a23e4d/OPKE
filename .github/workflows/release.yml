@@ -1,0 +1,57 @@
+name: Release
+run-name: Build & Publish Release (${{ github.ref_name }})
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin_name: opke.exe
+            asset_name: opke-windows-x86_64.exe
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin_name: opke
+            asset_name: opke-linux-x86_64
+    defaults:
+      run:
+        working-directory: opke-rs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build optimized release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare release asset & compute checksum
+        shell: bash
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.bin_name }} ../${{ matrix.asset_name }}
+          cd ..
+          sha256sum ${{ matrix.asset_name }} > ${{ matrix.asset_name }}.sha256
+
+      - name: Upload binaries to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.asset_name }}
+            ${{ matrix.asset_name }}.sha256
+          draft: false
+          prerelease: false
+          generate_release_notes: true
