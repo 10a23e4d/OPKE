@@ -60,4 +60,22 @@ mod proofs {
             assert_ne!(k1, k2);
         }
     }
+
+    /// Prove that PEM line-splitting capacity calculation never overflows usize.
+    #[kani::proof]
+    fn verify_pem_capacity_arithmetic() {
+        let b64_len: usize = kani::any();
+        let line_len: usize = kani::any();
+
+        // Constrain to maximum possible ciphertext size * base64 expansion
+        kani::assume(b64_len <= MAX_CIPHERTEXT_BYTES * 2);
+        kani::assume(line_len >= 16 && line_len <= 1024);
+
+        let num_lines = b64_len.div_ceil(line_len);
+
+        let cap1 = b64_len.checked_add(num_lines);
+        assert!(cap1.is_some());
+        let cap2 = cap1.unwrap().checked_add(100);
+        assert!(cap2.is_some());
+    }
 }

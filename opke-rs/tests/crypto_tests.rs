@@ -212,5 +212,121 @@ mod property_tests {
 
             prop_assert!(res.is_err(), "Tampered ciphertext must be rejected by AEAD");
         }
+
+        #[test]
+        fn proptest_cascade_aad_tamper_detection(
+            data in prop::collection::vec(any::<u8>(), 1..1024),
+            aad in prop::collection::vec(any::<u8>(), 1..256),
+            key_seed1 in any::<[u8; 32]>(),
+            key_seed2 in any::<[u8; 32]>(),
+            flip_byte_idx in any::<usize>(),
+        ) {
+            prop_assume!(key_seed1 != key_seed2);
+
+            let (ct, tag, n_chacha, n_aes) = encrypt_cascade(
+                &data, &key_seed1, &key_seed2, None, None, Some(&aad)
+            ).unwrap();
+
+            // Tamper with one byte in the AAD
+            let mut tampered_aad = aad.clone();
+            let idx = flip_byte_idx % tampered_aad.len();
+            tampered_aad[idx] ^= 0x01;
+
+            let res = decrypt_cascade(
+                &ct, &tag, &n_chacha, &n_aes, &key_seed1, &key_seed2, Some(&tampered_aad)
+            );
+
+            prop_assert!(res.is_err(), "Tampered AAD must be rejected by AEAD");
+        }
+
+        #[test]
+        fn proptest_cascade_wrong_key_rejection(
+            data in prop::collection::vec(any::<u8>(), 1..1024),
+            key1 in any::<[u8; 32]>(),
+            key2 in any::<[u8; 32]>(),
+            wrong_key1 in any::<[u8; 32]>(),
+            wrong_key2 in any::<[u8; 32]>(),
+        ) {
+            prop_assume!(key1 != key2);
+            prop_assume!(wrong_key1 != key1 || wrong_key2 != key2);
+            prop_assume!(wrong_key1 != wrong_key2);
+
+            let (ct, tag, n_chacha, n_aes) = encrypt_cascade(
+                &data, &key1, &key2, None, None, None
+            ).unwrap();
+
+            let res = decrypt_cascade(
+                &ct, &tag, &n_chacha, &n_aes, &wrong_key1, &wrong_key2, None
+            );
+
+            prop_assert!(res.is_err(), "Decryption with wrong keys must be rejected");
+        }
+
+        #[test]
+        fn proptest_envelope_json_and_pem_roundtrip(
+            secret_str in "\\PC{1,1024}",
+            kdf_salt in any::<[u8; 16]>(),
+            key1 in any::<[u8; 32]>(),
+            key2 in any::<[u8; 32]>(),
+        ) {
+            prop_assume!(key1 != key2);
+            prop_assume!(!secret_str.is_empty());
+
+            let plaintext = secret_str.as_bytes();
+            let (ct, tag, n_chacha, n_aes) = encrypt_cascade(
+                plaintext, &key1, &key2, None, None, None
+            ).unwrap();
+
+            let envelope = create_envelope(
+                &kdf_salt,
+                1024,
+                1,
+                1,
+                &n_chacha,
+                &n_aes,
+                &tag,
+                &ct,
+                Some(3),
+            ).unwrap();
+
+            // Serialize to Paper PEM format
+            let pem_str = serialize_envelope(&envelope, true).unwrap();
+
+            // Deserialize directly from PEM string
+            let restored_env = deserialize_envelope(&pem_str).unwrap();
+
+            // Decrypt restored ciphertext
+            let restored_ct = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                &restored_env.data
+            ).unwrap();
+
+            let restored_tag: [u8; 16] = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                &restored_env.cipher.tag_aes
+            ).unwrap().try_into().unwrap();
+
+            let restored_n_chacha: [u8; 12] = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                &restored_env.cipher.nonce_chacha
+            ).unwrap().try_into().unwrap();
+
+            let restored_n_aes: [u8; 12] = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                &restored_env.cipher.nonce_aes
+            ).unwrap().try_into().unwrap();
+
+            let decrypted = decrypt_cascade(
+                &restored_ct,
+                &restored_tag,
+                &restored_n_chacha,
+                &restored_n_aes,
+                &key1,
+                &key2,
+                None,
+            ).unwrap();
+
+            prop_assert_eq!(decrypted.as_slice(), plaintext);
+        }
     }
 }
