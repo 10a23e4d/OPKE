@@ -2,7 +2,9 @@
 //! permission leakage, and incomplete file residue.
 
 use std::fs::OpenOptions;
-use std::io::{self, IsTerminal, Read, Seek, Write};
+#[cfg(windows)]
+use std::io::{self, IsTerminal};
+use std::io::{Read, Seek, Write};
 use std::path::Path;
 use zeroize::Zeroizing;
 
@@ -96,6 +98,11 @@ extern "system" {
         ReturnLength: *mut u32,
     ) -> i32;
     fn EqualSid(pSid1: *mut std::ffi::c_void, pSid2: *mut std::ffi::c_void) -> i32;
+    fn CheckTokenMembership(
+        TokenHandle: *mut std::ffi::c_void,
+        SidToCheck: *mut std::ffi::c_void,
+        IsMember: *mut i32,
+    ) -> i32;
 }
 
 /// Validates file path against NTFS Alternate Data Streams (ADS) and Windows reserved device names (VULN-39, VULN-40).
@@ -243,6 +250,7 @@ pub fn write_secure_file_with_options(
     force: bool,
 ) -> Result<(), OpkeError> {
     let p = path.as_ref();
+    let _ = force;
     validate_file_path(p)?;
 
     let existed_before = std::fs::symlink_metadata(p).is_ok();
@@ -388,8 +396,28 @@ pub fn write_secure_file_with_options(
                                 token_user_buf.as_ptr() as *const *mut std::ffi::c_void
                             )
                         };
+                        let mut is_authorized_owner = false;
                         let same = unsafe { EqualSid(owner_sid, token_user_sid) };
-                        if same == 0 {
+                        if same != 0 {
+                            is_authorized_owner = true;
+                        } else {
+                            // On environments running as Administrator (such as CI runners),
+                            // newly created files are owned by BUILTIN\Administrators.
+                            // Verify whether the current process token is a member of the owner SID.
+                            let mut is_member = 0i32;
+                            let mem_ok = unsafe {
+                                CheckTokenMembership(
+                                    std::ptr::null_mut(),
+                                    owner_sid,
+                                    &mut is_member,
+                                )
+                            };
+                            if mem_ok != 0 && is_member != 0 {
+                                is_authorized_owner = true;
+                            }
+                        }
+
+                        if !is_authorized_owner {
                             unsafe {
                                 LocalFree(file_sd);
                             }

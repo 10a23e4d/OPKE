@@ -21,7 +21,7 @@ pub fn scrub_env_passphrase() -> Result<Option<Zeroizing<String>>, OpkeError> {
         #[cfg(target_os = "linux")]
         {
             unsafe {
-                libc::unsetenv(b"OPKE_PASSPHRASE\0".as_ptr() as *const libc::c_char);
+                libc::unsetenv(c"OPKE_PASSPHRASE".as_ptr());
             }
 
             // Wipe from /proc/self/environ physical memory region via /proc/self/stat
@@ -38,7 +38,7 @@ pub fn scrub_env_passphrase() -> Result<Option<Zeroizing<String>>, OpkeError> {
                                     std::slice::from_raw_parts_mut(env_start as *mut u8, len)
                                 };
                                 let targets = [
-                                    format!("OPKE_PASSPHRASE={}", &*val).into_bytes(),
+                                    format!("OPKE_PASSPHRASE={}", *val).into_bytes(),
                                     val.as_bytes().to_vec(),
                                 ];
                                 for needle in &targets {

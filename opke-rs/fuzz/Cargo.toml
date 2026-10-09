@@ -1,0 +1,26 @@
+[package]
+name = "opke-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.opke]
+path = ".."
+
+[[bin]]
+name = "fuzz_envelope"
+path = "fuzz_targets/fuzz_envelope.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_cascade"
+path = "fuzz_targets/fuzz_cascade.rs"
+test = false
+doc = false

@@ -70,6 +70,10 @@ pub fn lock_memory(ptr: *const u8, len: usize) -> bool {
     if len == 0 || ptr.is_null() {
         return true;
     }
+    #[cfg(miri)]
+    {
+        return true;
+    }
     #[cfg(windows)]
     unsafe {
         let res = VirtualLock(ptr as *const _, len);
@@ -97,6 +101,10 @@ pub fn lock_memory(ptr: *const u8, len: usize) -> bool {
 /// Unlocks memory page(s) previously locked into physical RAM.
 pub fn unlock_memory(ptr: *const u8, len: usize) {
     if len == 0 || ptr.is_null() {
+        return;
+    }
+    #[cfg(miri)]
+    {
         return;
     }
     #[cfg(windows)]

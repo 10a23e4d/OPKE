@@ -86,7 +86,7 @@ jobs:
           MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-permissive-provenance"
 
   audit:
-    name: Security Vulnerability Audit
+    name: Security Vulnerability & Supply Chain Audit
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -95,8 +95,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install cargo-audit prebuilt binary
-        uses: taiki-e/install-action@cargo-audit
+      - name: Install cargo-audit and cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
 
       - name: Run cargo audit
         run: cargo audit
+
+      - name: Run cargo deny check
+        run: cargo deny check
+
+  fuzz-check:
+    name: Fuzz Targets Compilation Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: opke-rs/fuzz
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: opke-rs
+
+      - name: Check fuzz targets build
+        run: cargo check
