@@ -8,7 +8,10 @@ use crate::error::OpkeError;
 /// Renders a high-contrast half-block QR code directly to a writer (e.g. stderr).
 pub fn print_terminal_qr<W: Write>(data: &str, mut out: W) -> Result<(), OpkeError> {
     if data.is_empty() {
-        return Err(OpkeError::Validation("QR code data cannot be empty.".into()));
+        writeln!(out, "[-] Terminal QR generation unavailable: data is empty")
+            .map_err(OpkeError::Io)?;
+        out.flush().map_err(OpkeError::Io)?;
+        return Ok(());
     }
 
     let levels = [EcLevel::M, EcLevel::L];
@@ -22,7 +25,15 @@ pub fn print_terminal_qr<W: Write>(data: &str, mut out: W) -> Result<(), OpkeErr
 
     let code = match qr_code {
         Some(c) => c,
-        None => return Ok(()), // Silently skip if data exceeds terminal QR capacity
+        None => {
+            writeln!(
+                out,
+                "[-] Terminal QR generation unavailable: data exceeds maximum QR code capacity (2,953 bytes)."
+            )
+            .map_err(OpkeError::Io)?;
+            out.flush().map_err(OpkeError::Io)?;
+            return Ok(());
+        }
     };
 
     let width = code.width();

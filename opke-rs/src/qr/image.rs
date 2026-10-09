@@ -13,6 +13,19 @@ pub const MAX_QR_CAPACITY_BYTES: usize = 2953;
 /// Attempts generation with Level H, falling back to Level Q, Level M, Level L if size requires.
 pub fn generate_qr_image(data: &str, output_path: impl AsRef<Path>) -> Result<(), OpkeError> {
     let p = output_path.as_ref();
+    if p.as_os_str().is_empty() || p.to_string_lossy().trim().is_empty() {
+        return Err(OpkeError::Validation("Invalid output_path: path cannot be empty.".into()));
+    }
+
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            return Err(OpkeError::Validation(format!(
+                "Invalid output_path: parent directory '{}' does not exist.",
+                parent.display()
+            )));
+        }
+    }
+
     let lower_ext = p
         .extension()
         .and_then(|ext| ext.to_str())

@@ -25,3 +25,6 @@ __pycache__/
 **/.venv/
 .pytest_cache/
 **/.pytest_cache/
+
+# Agent directory
+.agents/

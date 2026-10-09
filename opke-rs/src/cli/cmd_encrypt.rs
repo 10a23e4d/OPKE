@@ -7,38 +7,61 @@ use zeroize::Zeroizing;
 
 use crate::core::{
     derive_key_and_split, encrypt_cascade, get_profile, MAX_SECRET_BYTES,
-    MIN_M_KIB, MIN_P, MIN_T, MAX_M_KIB, MAX_P, MAX_T, PROFILE_PRODUCTION, SALT_LEN,
+    MIN_M_KIB, MIN_P, MIN_T, MAX_M_KIB, MAX_P, MAX_T, SALT_LEN,
 };
 use crate::envelope::create_envelope;
 use crate::error::OpkeError;
 use crate::qr::{generate_qr_image, print_terminal_qr_stderr};
 use crate::security::{
     get_available_memory_kib, prompt_passphrase, prompt_secret, read_secure_file,
-    scrub_env_passphrase, write_secure_file,
+    scrub_cmdline_targets, scrub_env_passphrase, write_secure_file_with_options,
 };
 
 use super::args::EncryptArgs;
 
 pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
+    // 0. Prohibit passing plaintext secrets or passphrases via CLI args (VULN-13)
+    if let Some(ref sec) = args.secret {
+        scrub_cmdline_targets(&[sec]);
+        return Err(OpkeError::Validation(
+            "Passing secrets as command-line arguments is strictly prohibited for security.\nPlease use interactive prompt, stdin pipe, or provide a file via '-i / --input-file'.".into(),
+        ));
+    }
+    if let Some(ref pass) = args.passphrase {
+        scrub_cmdline_targets(&[pass]);
+        return Err(OpkeError::Validation(
+            "Passing passphrases as command-line arguments is strictly prohibited for security.\nPlease use interactive prompt or set the 'OPKE_PASSPHRASE' environment variable.".into(),
+        ));
+    }
+
     // 1. Resolve and validate KDF parameters
-    let profile = get_profile(&args.profile).unwrap_or(PROFILE_PRODUCTION);
+    let profile = match get_profile(&args.profile) {
+        Some(p) => p,
+        None => {
+            return Err(OpkeError::Validation(format!(
+                "Unknown profile: '{}'. Choose from 'production', 'moderate', or 'fast'.",
+                args.profile
+            )));
+        }
+    };
+
     let m_kib = args.mem.unwrap_or(profile.m_kib);
     let t = args.time.unwrap_or(profile.t);
     let p = args.threads.unwrap_or(profile.p);
 
-    if m_kib < MIN_M_KIB || m_kib > MAX_M_KIB {
+    if !(MIN_M_KIB..=MAX_M_KIB).contains(&m_kib) {
         return Err(OpkeError::Validation(format!(
             "Invalid memory cost: {} KiB (range: {}-{})",
             m_kib, MIN_M_KIB, MAX_M_KIB
         )));
     }
-    if p < MIN_P || p > MAX_P {
+    if !(MIN_P..=MAX_P).contains(&p) {
         return Err(OpkeError::Validation(format!(
             "Invalid parallelism: {} (range: {}-{})",
             p, MIN_P, MAX_P
         )));
     }
-    if t < MIN_T || t > MAX_T {
+    if !(MIN_T..=MAX_T).contains(&t) {
         return Err(OpkeError::Validation(format!(
             "Invalid time cost: {} (range: {}-{})",
             t, MIN_T, MAX_T
@@ -64,18 +87,20 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
     }
 
     // 2. Resolve secret plaintext
-    let secret_bytes: Zeroizing<Vec<u8>> = if let Some(sec) = args.secret {
-        eprintln!(
-            "[!] SECURITY WARNING: Passing secret as command-line argument exposes it to process tables and shell history!"
-        );
-        Zeroizing::new(sec.into_bytes())
-    } else if let Some(path) = args.input_file {
+    let secret_bytes: Zeroizing<Vec<u8>> = if let Some(path) = args.input_file {
         read_secure_file(path, MAX_SECRET_BYTES)?
     } else if !io::stdin().is_terminal() {
-        let mut buf = Zeroizing::new(Vec::new());
-        io::stdin().read_to_end(&mut buf)?;
+        let mut take = io::stdin().take((MAX_SECRET_BYTES + 1) as u64);
+        let mut buf = Zeroizing::new(Vec::with_capacity(65536));
+        take.read_to_end(&mut buf)?;
         if buf.is_empty() {
             return Err(OpkeError::Validation("Secret input is empty.".into()));
+        }
+        if buf.len() > MAX_SECRET_BYTES {
+            return Err(OpkeError::Validation(format!(
+                "Secret input exceeds maximum allowed size ({} bytes).",
+                MAX_SECRET_BYTES
+            )));
         }
         buf
     } else {
@@ -87,12 +112,7 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
     }
 
     // 3. Resolve passphrase
-    let passphrase: Zeroizing<String> = if let Some(pass) = args.passphrase {
-        eprintln!(
-            "[!] SECURITY WARNING: Passing passphrase as command-line argument exposes it to process tables and shell history!"
-        );
-        Zeroizing::new(pass)
-    } else if let Some(env_pass) = scrub_env_passphrase()? {
+    let passphrase: Zeroizing<String> = if let Some(env_pass) = scrub_env_passphrase()? {
         env_pass
     } else {
         prompt_passphrase(true)?
@@ -153,7 +173,7 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         } else {
             paper_output.clone()
         };
-        write_secure_file(out_path, content_to_write.as_bytes())?;
+        write_secure_file_with_options(out_path, content_to_write.as_bytes(), args.force)?;
         eprintln!("[+] Encrypted envelope written to: {}", out_path);
     } else {
         if args.raw {

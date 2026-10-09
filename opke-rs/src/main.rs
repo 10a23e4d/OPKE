@@ -29,6 +29,11 @@ fn main() {
     };
 
     if let Err(e) = result {
+        if let opke::error::OpkeError::Io(ref io_err) = e {
+            if io_err.kind() == std::io::ErrorKind::BrokenPipe {
+                process::exit(0);
+            }
+        }
         eprintln!("[-] Error: {}", e);
         process::exit(1);
     }

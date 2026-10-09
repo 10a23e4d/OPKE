@@ -15,12 +15,69 @@ pub fn pause_for_exit() {
     let _ = io::stdin().read_line(&mut line);
 }
 
-fn prompt_line(prompt: &str) -> String {
+/// Prompts user for a line of text, automatically trimming surrounding quotes (Windows drag-and-drop).
+pub fn prompt_line(prompt: &str) -> String {
     print!("{}", prompt);
     let _ = io::stdout().flush();
     let mut line = String::new();
     let _ = io::stdin().read_line(&mut line);
-    line.trim().to_string()
+    let mut s = line.trim();
+    if s.len() >= 2 && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\''))) {
+        s = &s[1..s.len() - 1];
+    }
+    s.trim().to_string()
+}
+
+/// Prompts for an output file path, prompting to confirm overwrite if file exists (VULN-22).
+/// If overwrite is rejected, re-prompts for a different file path.
+fn prompt_output_file(prompt: &str, default: &str) -> Option<String> {
+    loop {
+        let input = prompt_line(prompt);
+        let path_str = if input.is_empty() {
+            default.to_string()
+        } else {
+            input
+        };
+        if path_str.eq_ignore_ascii_case("skip") {
+            return None;
+        }
+        let p = std::path::Path::new(&path_str);
+        if p.exists() {
+            eprintln!("[!] 警告: 出力先ファイル '{}' は既に存在します。", p.display());
+            let ans = prompt_line("上書きしますか？ (y/N): ");
+            if ans.eq_ignore_ascii_case("y") {
+                return Some(path_str);
+            } else {
+                println!("[*] 別の出力ファイル名を指定してください。");
+                continue;
+            }
+        } else {
+            return Some(path_str);
+        }
+    }
+}
+
+/// Prompts for an optional output file path, confirming overwrite if existing.
+fn prompt_optional_output_file(prompt: &str) -> Option<String> {
+    loop {
+        let input = prompt_line(prompt);
+        if input.is_empty() {
+            return None;
+        }
+        let p = std::path::Path::new(&input);
+        if p.exists() {
+            eprintln!("[!] 警告: 出力先ファイル '{}' は既に存在します。", p.display());
+            let ans = prompt_line("上書きしますか？ (y/N): ");
+            if ans.eq_ignore_ascii_case("y") {
+                return Some(input);
+            } else {
+                println!("[*] 別の出力ファイル名を指定してください。");
+                continue;
+            }
+        } else {
+            return Some(input);
+        }
+    }
 }
 
 pub fn run_interactive_wizard() -> Result<(), OpkeError> {
@@ -58,21 +115,15 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                 let in_file = prompt_line("秘密情報ファイルから読み込みますか？ (空欄で直接入力): ");
                 let input_file = if in_file.is_empty() { None } else { Some(in_file) };
 
-                let out_file = prompt_line("ペーパーキー出力ファイル名 [デフォルト: paper_key.txt]: ");
-                let output = if out_file.is_empty() {
-                    Some("paper_key.txt".to_string())
-                } else {
-                    Some(out_file)
-                };
+                let output = prompt_output_file(
+                    "ペーパーキー出力ファイル名 [デフォルト: paper_key.txt]: ",
+                    "paper_key.txt",
+                );
 
-                let qr_file = prompt_line("QRコード画像保存ファイル名 [デフォルト: paper_key.png, 空欄でスキップ]: ");
-                let qr = if qr_file.is_empty() {
-                    Some("paper_key.png".to_string())
-                } else if qr_file.eq_ignore_ascii_case("skip") {
-                    None
-                } else {
-                    Some(qr_file)
-                };
+                let qr = prompt_output_file(
+                    "QRコード画像保存ファイル名 [デフォルト: paper_key.png, 'skip'でスキップ]: ",
+                    "paper_key.png",
+                );
 
                 let qr_term_ans = prompt_line("ターミナル画面上にもQRコードを表示しますか？ (Y/n): ");
                 let qr_term = !qr_term_ans.eq_ignore_ascii_case("n");
@@ -110,8 +161,9 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                     Some(in_file)
                 };
 
-                let out_file = prompt_line("復号平文の保存先ファイル名 (空欄で画面に直接表示): ");
-                let output = if out_file.is_empty() { None } else { Some(out_file) };
+                let output = prompt_optional_output_file(
+                    "復号平文の保存先ファイル名 (空欄で画面に直接表示): ",
+                );
 
                 let args = DecryptArgs {
                     input: None,
@@ -168,6 +220,7 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                     mem: None,
                     time: None,
                     threads: None,
+                    force: false,
                 };
 
                 if let Err(e) = cmd_benchmark::execute(args) {

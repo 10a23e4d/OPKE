@@ -14,15 +14,21 @@ pub fn to_paper_format(b64_payload: &str, line_length: usize) -> Result<String, 
         )));
     }
 
-    let mut output = String::with_capacity(b64_payload.len() + 100);
+    let num_lines = if b64_payload.is_empty() {
+        0
+    } else {
+        b64_payload.len().div_ceil(line_length)
+    };
+    let cap = PEM_HEADER.len() + 1 + b64_payload.len() + num_lines + PEM_FOOTER.len() + 1;
+    let mut output = String::with_capacity(cap);
     output.push_str(PEM_HEADER);
     output.push('\n');
 
-    let chars: Vec<char> = b64_payload.chars().collect();
-    for chunk in chars.chunks(line_length) {
-        let line: String = chunk.iter().collect();
-        output.push_str(&line);
-        output.push('\n');
+    for chunk in b64_payload.as_bytes().chunks(line_length) {
+        if let Ok(line) = std::str::from_utf8(chunk) {
+            output.push_str(line);
+            output.push('\n');
+        }
     }
 
     output.push_str(PEM_FOOTER);

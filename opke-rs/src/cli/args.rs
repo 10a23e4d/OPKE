@@ -28,14 +28,14 @@ pub enum Commands {
 
 #[derive(Args, Debug)]
 pub struct EncryptArgs {
-    /// Secret plaintext to encrypt (Warning: command-line arguments may be visible in process table)
+    /// Secret plaintext to encrypt (Rejected for security: use interactive prompt, pipe, or -i)
     pub secret: Option<String>,
 
     /// Read secret plaintext from a file
     #[arg(short = 'i', long = "input-file")]
     pub input_file: Option<String>,
 
-    /// Passphrase to derive encryption keys (Warning: visible in process table)
+    /// Passphrase to derive encryption keys (Rejected for security: use interactive prompt or OPKE_PASSPHRASE)
     #[arg(short = 'p', long = "passphrase")]
     pub passphrase: Option<String>,
 
@@ -89,7 +89,7 @@ pub struct DecryptArgs {
     #[arg(short = 'i', long = "input-file")]
     pub input_file: Option<String>,
 
-    /// Passphrase to decrypt envelope
+    /// Passphrase to decrypt envelope (Rejected for security: use interactive prompt or OPKE_PASSPHRASE)
     #[arg(short = 'p', long = "passphrase")]
     pub passphrase: Option<String>,
 
@@ -98,16 +98,16 @@ pub struct DecryptArgs {
     pub output: Option<String>,
 
     /// Maximum allowed memory cost in KiB (DoS protection)
-    #[arg(long = "max-mem")]
-    pub max_mem: Option<u32>,
+    #[arg(long = "max-mem", allow_hyphen_values = true)]
+    pub max_mem: Option<i64>,
 
     /// Maximum allowed time cost (iterations) (DoS protection)
-    #[arg(long = "max-time")]
-    pub max_time: Option<u32>,
+    #[arg(long = "max-time", allow_hyphen_values = true)]
+    pub max_time: Option<i64>,
 
     /// Maximum allowed parallelism (threads) (DoS protection)
-    #[arg(long = "max-threads")]
-    pub max_threads: Option<u32>,
+    #[arg(long = "max-threads", allow_hyphen_values = true)]
+    pub max_threads: Option<i64>,
 
     /// Bypass available memory check and force execution
     #[arg(long = "force")]
@@ -141,4 +141,8 @@ pub struct BenchmarkArgs {
     /// Override Argon2id parallelism (threads)
     #[arg(long = "threads")]
     pub threads: Option<u32>,
+
+    /// Bypass available memory check and force execution
+    #[arg(long = "force")]
+    pub force: bool,
 }

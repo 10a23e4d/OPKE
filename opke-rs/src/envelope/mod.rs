@@ -10,8 +10,8 @@ use base64::prelude::*;
 use subtle::ConstantTimeEq;
 
 use crate::core::{
-    MAX_CIPHERTEXT_BYTES, MAX_M_KIB, MAX_P, MAX_T, MIN_M_KIB, MIN_P, MIN_T, NONCE_LEN, SALT_LEN,
-    TAG_LEN,
+    MAX_CIPHERTEXT_BYTES, MAX_M_KIB, MAX_P, MAX_T, MIN_CIPHERTEXT_BYTES, MIN_M_KIB, MIN_P, MIN_T,
+    NONCE_LEN, SALT_LEN, TAG_LEN,
 };
 use crate::error::OpkeError;
 
@@ -105,11 +105,25 @@ impl OPKEEnvelope {
         let mut tag_aes = [0u8; TAG_LEN];
         tag_aes.copy_from_slice(&tag_vec);
 
+        let max_b64_len = MAX_CIPHERTEXT_BYTES.div_ceil(3) * 4 + 4;
+        if self.data.len() > max_b64_len {
+            return Err(OpkeError::Envelope(format!(
+                "Ciphertext data exceeds maximum allowed size ({} bytes).",
+                MAX_CIPHERTEXT_BYTES
+            )));
+        }
+
         let final_ciphertext = BASE64_STANDARD
             .decode(&self.data)
             .map_err(|e| OpkeError::Envelope(format!("Invalid Base64 ciphertext data: {}", e)))?;
         if final_ciphertext.is_empty() {
             return Err(OpkeError::Envelope("Ciphertext data cannot be empty.".into()));
+        }
+        if final_ciphertext.len() < MIN_CIPHERTEXT_BYTES {
+            return Err(OpkeError::Envelope(format!(
+                "Ciphertext data is too short (minimum {} bytes).",
+                MIN_CIPHERTEXT_BYTES
+            )));
         }
         if final_ciphertext.len() > MAX_CIPHERTEXT_BYTES {
             return Err(OpkeError::Envelope(format!(
@@ -174,6 +188,12 @@ pub fn create_envelope(
         return Err(OpkeError::Validation(
             "Ciphertext data cannot be empty.".into(),
         ));
+    }
+    if final_ciphertext.len() < MIN_CIPHERTEXT_BYTES {
+        return Err(OpkeError::Validation(format!(
+            "Ciphertext data is too short (minimum {} bytes).",
+            MIN_CIPHERTEXT_BYTES
+        )));
     }
     if final_ciphertext.len() > MAX_CIPHERTEXT_BYTES {
         return Err(OpkeError::Validation(format!(

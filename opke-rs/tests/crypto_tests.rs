@@ -117,7 +117,7 @@ fn test_envelope_v2_backward_compatibility() {
         "nonce_aes": "AgICAgICAgICAgIC",
         "tag_aes": "AwMDAwMDAwMDAwMDAwMDAw=="
       },
-      "data": "VGVzdENpcGhlcnRleHQ="
+      "data": "dmFsaWRfY2lwaGVydGV4dF8xMjM0NTY3"
     }"#;
 
     let parsed = deserialize_envelope(v2_json).unwrap();
