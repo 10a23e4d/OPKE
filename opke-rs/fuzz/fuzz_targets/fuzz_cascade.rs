@@ -11,7 +11,7 @@ fuzz_target!(|data: &[u8]| {
 
     let tag: [u8; 16] = data[0..16].try_into().unwrap();
     let n1: [u8; 12] = data[16..28].try_into().unwrap();
-    let n2: [u8; 28..40].try_into().unwrap();
+    let n2: [u8; 12] = data[28..40].try_into().unwrap();
     let k1: [u8; 32] = data[40..72].try_into().unwrap();
     let k2: [u8; 32] = data[72..104].try_into().unwrap();
     let ciphertext = &data[104..];
