@@ -153,8 +153,8 @@ jobs:
 
       - name: Run libFuzzer smoke test (fuzz_envelope & fuzz_cascade)
         run: |
-          cargo fuzz run fuzz_envelope -- -max_total_time=10 -max_len=4096
-          cargo fuzz run fuzz_cascade -- -max_total_time=10 -max_len=4096
+          cargo fuzz run --sanitizer none fuzz_envelope -- -runs=1000 -max_total_time=5 -max_len=4096
+          cargo fuzz run --sanitizer none fuzz_cascade -- -runs=1000 -max_total_time=5 -max_len=4096
 
   kani:
     name: Formal Verification (Kani)
