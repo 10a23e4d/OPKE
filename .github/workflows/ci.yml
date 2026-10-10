@@ -147,14 +147,15 @@ jobs:
         with:
           workspaces: opke-rs
 
-      - name: Check fuzz targets build
-        working-directory: opke-rs/fuzz
-        run: cargo check
+      - name: Build fuzz targets
+        run: |
+          cargo fuzz build fuzz_envelope --sanitizer none
+          cargo fuzz build fuzz_cascade --sanitizer none
 
       - name: Run libFuzzer smoke test (fuzz_envelope & fuzz_cascade)
         run: |
-          cargo fuzz run --sanitizer none fuzz_envelope -- -runs=1000 -max_total_time=5 -max_len=4096
-          cargo fuzz run --sanitizer none fuzz_cascade -- -runs=1000 -max_total_time=5 -max_len=4096
+          cargo fuzz run fuzz_envelope --sanitizer none -- -runs=1000 -max_total_time=5 -max_len=4096
+          cargo fuzz run fuzz_cascade --sanitizer none -- -runs=1000 -max_total_time=5 -max_len=4096
 
   kani:
     name: Formal Verification (Kani)
