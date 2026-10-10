@@ -30,6 +30,16 @@ jobs:
         with:
           workspaces: opke-rs
 
+      - name: Enforce no prebuilt binaries in repository (Rule 4.3)
+        working-directory: .
+        run: |
+          if git ls-files | grep -E '\.(exe|dll|so|dylib|bin)$|^bin/'; then
+            echo "[-] Error: Prebuilt binary or executable detected in git tracking. Per GEMINI.md Rule 4.3, binaries must not be committed."
+            exit 1
+          else
+            echo "[+] Binary check passed: No executables or prebuilt binary artifacts tracked in repository."
+          fi
+
       - name: Check code formatting (rustfmt)
         run: cargo fmt --check
 
@@ -51,11 +61,16 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: opke-rs
+
+      - name: Run clippy (deny all warnings on ${{ matrix.os }})
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run test suite (unit, integration & property tests)
         run: cargo test --workspace --all-targets
@@ -110,11 +125,11 @@ jobs:
         run: cargo machete
 
   fuzz-check:
-    name: Fuzz Targets Compilation Check
+    name: Fuzz Targets Compilation & Smoke Test
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: opke-rs/fuzz
+        working-directory: opke-rs
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -122,13 +137,24 @@ jobs:
       - name: Install Nightly Rust
         uses: dtolnay/rust-toolchain@nightly
 
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: opke-rs
 
       - name: Check fuzz targets build
+        working-directory: opke-rs/fuzz
         run: cargo check
+
+      - name: Run libFuzzer smoke test (fuzz_envelope & fuzz_cascade)
+        run: |
+          cargo fuzz run fuzz_envelope -- -max_total_time=10 -max_len=4096
+          cargo fuzz run fuzz_cascade -- -max_total_time=10 -max_len=4096
 
   kani:
     name: Formal Verification (Kani)
