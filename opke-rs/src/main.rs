@@ -7,13 +7,13 @@ use opke::cli::args::{Cli, Commands};
 use opke::cli::{cmd_benchmark, cmd_decrypt, cmd_encrypt, cmd_inspect, wizard};
 
 fn main() {
-    // Disable core dumps and crash report dialogs (WER) to prevent memory dumps to disk (VULN-44)
+    // Disable core dumps and crash report dialogs (WER) to prevent memory dumps to disk (VULN-44, VULN-212)
     #[cfg(windows)]
     unsafe {
         extern "system" {
             fn SetErrorMode(uMode: u32) -> u32;
         }
-        SetErrorMode(0x0001 | 0x0002);
+        SetErrorMode(0x0001 | 0x0002 | 0x8000);
     }
     #[cfg(unix)]
     unsafe {
@@ -28,18 +28,10 @@ fn main() {
         eprintln!("[!] Warning: Failed to set Ctrl+C signal handler: {}", e);
     }
 
-    // If launched without any command-line arguments (e.g. double-clicked from Explorer),
-    // launch the interactive wizard mode.
-    if std::env::args().len() <= 1 {
-        if let Err(e) = wizard::run_interactive_wizard() {
-            eprintln!("[-] Error: {}", e);
-            wizard::pause_for_exit();
-            process::exit(1);
-        }
-        return;
-    }
-
+    // VULN-125: Eliminate std::env::args().len() heap allocation of sensitive arguments.
+    // Parse CLI directly; if no subcommand is supplied, launch wizard mode.
     let cli = Cli::parse();
+    let is_wizard = cli.command.is_none();
 
     let result = match cli.command {
         Some(Commands::Encrypt(args)) => cmd_encrypt::execute(args),
@@ -56,6 +48,9 @@ fn main() {
             }
         }
         eprintln!("[-] Error: {}", e);
+        if is_wizard {
+            wizard::pause_for_exit();
+        }
         process::exit(1);
     }
 }

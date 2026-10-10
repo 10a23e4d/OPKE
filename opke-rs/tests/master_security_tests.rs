@@ -368,6 +368,7 @@ fn test_v41_v2_downgrade_rejected_without_flag() {
         max_threads: None,
         allow_v2: false,
         force: false,
+        overwrite: false,
     };
 
     let res = cmd_decrypt::execute(args_without_flag);

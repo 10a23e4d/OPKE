@@ -16,7 +16,7 @@ use crate::core::{
 use crate::error::OpkeError;
 
 pub const CURRENT_VERSION: u32 = 3;
-pub const MAX_ENVELOPE_CHARS: usize = 160 * 1024 * 1024; // 160 MiB
+pub const MAX_ENVELOPE_CHARS: usize = 100 * 1024 * 1024; // 100 MiB max envelope chars (VULN-190)
 
 #[derive(Debug, Clone)]
 pub struct DecodedEnvelopeBytes {
@@ -390,6 +390,11 @@ fn validate_no_duplicate_json_keys(json: &str) -> Result<(), OpkeError> {
             }
             '{' => {
                 expecting_colon = false;
+                if object_stack.len() >= 32 {
+                    return Err(OpkeError::Envelope(
+                        "JSON exceeds maximum nesting depth (32).".into(),
+                    ));
+                }
                 object_stack.push(HashSet::new());
             }
             '}' => {
@@ -435,12 +440,12 @@ pub fn deserialize_envelope(raw_input: &str) -> Result<OPKEEnvelope, OpkeError> 
 
     // 1. Strip PEM header/footer if present
     let unpemed = pem::strip_pem(text)?;
-    let trimmed_payload = unpemed.trim();
+    let trimmed_payload = unpemed.trim().trim_start_matches('\u{feff}');
     if trimmed_payload.is_empty() {
         return Err(OpkeError::Envelope("Envelope payload is empty.".into()));
     }
 
-    // 2. Determine if payload is JSON or Base64-encoded JSON (VULN-95: preserve raw JSON whitespace)
+    // 2. Determine if payload is JSON or Base64-encoded JSON (VULN-95: preserve raw JSON whitespace, VULN-132: UTF-8 BOM support)
     let json_str = if trimmed_payload.starts_with('{') && trimmed_payload.ends_with('}') {
         trimmed_payload.to_string()
     } else {
@@ -507,9 +512,15 @@ pub fn deserialize_envelope(raw_input: &str) -> Result<OPKEEnvelope, OpkeError> 
         )));
     }
 
-    // 6. Validate Cipher layers (bounded error formatting to prevent DoS, VULN-73)
+    // 6. Validate Cipher layers (bounded error formatting to prevent DoS, VULN-73, VULN-198)
     let expected_layers = vec!["chacha20-poly1305".to_string(), "aes-256-gcm".to_string()];
-    if envelope.cipher.layers != expected_layers {
+    let normalized_layers: Vec<String> = envelope
+        .cipher
+        .layers
+        .iter()
+        .map(|l| l.to_ascii_lowercase())
+        .collect();
+    if normalized_layers != expected_layers {
         let layers_preview = if envelope.cipher.layers.len() > 5 {
             format!("{:?}...", &envelope.cipher.layers[..5])
         } else {

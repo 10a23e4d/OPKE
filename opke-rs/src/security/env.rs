@@ -89,10 +89,8 @@ pub fn scrub_env_passphrase() -> Result<Option<Zeroizing<String>>, OpkeError> {
                     b'E' as u16,
                     0,
                 ];
-                // SetEnvironmentVariableW with NULL deletes variable from process live PEB environment
-                SetEnvironmentVariableW(var_name.as_ptr(), std::ptr::null());
-
-                // Scrub any snapshot environment block from GetEnvironmentStringsW
+                // VULN-35, VULN-77, VULN-129: Scrub OPKE_PASSPHRASE from live Windows process environment strings
+                // BEFORE deleting it with SetEnvironmentVariableW (which unlinks and frees without zeroizing)
                 let env_ptr = GetEnvironmentStringsW();
                 if !env_ptr.is_null() {
                     let mut curr = env_ptr;
@@ -128,6 +126,9 @@ pub fn scrub_env_passphrase() -> Result<Option<Zeroizing<String>>, OpkeError> {
                     }
                     FreeEnvironmentStringsW(env_ptr);
                 }
+
+                // Delete variable from process live PEB environment
+                SetEnvironmentVariableW(var_name.as_ptr(), std::ptr::null());
             }
         }
 

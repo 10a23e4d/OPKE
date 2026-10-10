@@ -58,10 +58,15 @@ pub fn derive_key_and_split(
             MIN_T, MAX_T, t
         )));
     }
-    if !(MIN_M_KIB..=MAX_M_KIB).contains(&m_kib) {
+    let max_arch_kib = if usize::BITS <= 32 {
+        (u32::MAX / 1024).min(MAX_M_KIB)
+    } else {
+        MAX_M_KIB
+    };
+    if m_kib < MIN_M_KIB || m_kib > max_arch_kib {
         return Err(OpkeError::Validation(format!(
             "Memory cost must be between {} KiB and {} KiB, got {} KiB",
-            MIN_M_KIB, MAX_M_KIB, m_kib
+            MIN_M_KIB, max_arch_kib, m_kib
         )));
     }
     if m_kib < 8 * p {
@@ -72,13 +77,15 @@ pub fn derive_key_and_split(
         )));
     }
 
-    // Unicode NFC Normalization (VULN-55, VULN-84)
+    // Unicode NFC Normalization (VULN-55, VULN-84, VULN-136)
     let norm_pass: Zeroizing<Vec<u8>> = if let Ok(s) = std::str::from_utf8(passphrase) {
-        let mut nfc_buf = Zeroizing::new(String::with_capacity(s.len().saturating_mul(2)));
+        let mut nfc_buf = Zeroizing::new(Vec::with_capacity(s.len().saturating_mul(2)));
         for ch in s.nfc() {
-            nfc_buf.push(ch);
+            let mut b = [0u8; 4];
+            let encoded = ch.encode_utf8(&mut b);
+            nfc_buf.extend_from_slice(encoded.as_bytes());
         }
-        Zeroizing::new(nfc_buf.as_bytes().to_vec())
+        nfc_buf
     } else {
         Zeroizing::new(passphrase.to_vec())
     };

@@ -31,12 +31,12 @@ pub fn prompt_line(prompt: &str) -> Result<String, OpkeError> {
         ));
     }
     let mut s = line.trim();
-    if s.len() >= 2
+    while s.len() >= 2
         && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
     {
-        s = &s[1..s.len() - 1];
+        s = s[1..s.len() - 1].trim();
     }
-    Ok(s.trim().to_string())
+    Ok(s.to_string())
 }
 
 /// Prompts for an output file path, prompting to confirm overwrite if file exists (VULN-22).
@@ -144,7 +144,7 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                 };
 
                 let output = prompt_output_file(
-                    "ペーパーキー出力ファイル名 [デフォルト: paper_key.txt]: ",
+                    "ペーパーキー出力ファイル名 [デフォルト: paper_key.txt, 'skip'で画面出力]: ",
                     "paper_key.txt",
                 )?;
 
@@ -156,7 +156,7 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                 let qr_term_ans =
                     prompt_line("ターミナル画面上にもQRコードを表示しますか？ (Y/n): ")?;
                 let qr_term = !qr_term_ans.eq_ignore_ascii_case("n");
-                let force = output
+                let overwrite = output
                     .as_ref()
                     .is_some_and(|p| std::path::Path::new(p).exists())
                     || qr
@@ -177,7 +177,8 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                     raw: false,
                     multiline: false,
                     v2: false,
-                    force,
+                    overwrite,
+                    force: false,
                 };
 
                 if let Err(e) = cmd_encrypt::execute(args) {
@@ -214,7 +215,7 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                     }
                 }
 
-                let force = output
+                let overwrite = output
                     .as_ref()
                     .is_some_and(|p| std::path::Path::new(p).exists());
 
@@ -227,7 +228,8 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                     max_time: None,
                     max_threads: None,
                     allow_v2: false,
-                    force,
+                    overwrite,
+                    force: false,
                 };
 
                 if let Err(e) = cmd_decrypt::execute(args) {

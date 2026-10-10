@@ -4,7 +4,9 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::time::Instant;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::core::{decrypt_cascade, derive_key_and_split, MIN_M_KIB, MIN_P, MIN_T};
+use crate::core::{
+    decrypt_cascade, derive_key_and_split, MAX_M_KIB, MAX_P, MAX_T, MIN_M_KIB, MIN_P, MIN_T,
+};
 use crate::envelope::{deserialize_envelope, MAX_ENVELOPE_CHARS};
 use crate::error::OpkeError;
 use crate::security::{
@@ -29,24 +31,32 @@ fn read_stdin_envelope() -> Result<String, OpkeError> {
     Ok(buf)
 }
 
-fn output_plaintext_to_stdout(plaintext: &[u8]) -> Result<(), OpkeError> {
+fn output_plaintext_to_stdout(plaintext: &[u8], force: bool) -> Result<(), OpkeError> {
     if io::stdout().is_terminal() {
-        // VULN-72: Warn if binary control characters present
+        // VULN-72, VULN-177: Refuse binary control characters / ANSI escape sequences unless force
         let has_control = plaintext
             .iter()
             .any(|&b| (b < 0x20 && b != b'\t' && b != b'\n' && b != b'\r') || b == 0x7f);
         if has_control {
+            if !force {
+                return Err(OpkeError::Validation(
+                    "Output contains binary control characters or ANSI escape sequences.\nDirect terminal output was blocked to prevent terminal escape injection attacks.\nUse '--output <file>' to save safely, or '--force' to display anyway.".into()
+                ));
+            }
             eprintln!("[!] Warning: Output contains binary control characters. Terminal output may be corrupted. Use --output <file> to save safely.");
         }
-        io::stdout().write_all(plaintext)?;
+        let mut stdout = io::stdout();
+        stdout.write_all(plaintext).map_err(OpkeError::Io)?;
         // VULN-51: Ensure trailing newline on terminal
         if !plaintext.is_empty() && !plaintext.ends_with(b"\n") {
-            io::stdout().write_all(b"\n")?;
+            stdout.write_all(b"\n").map_err(OpkeError::Io)?;
         }
+        stdout.flush().map_err(OpkeError::Io)?;
     } else {
-        io::stdout().write_all(plaintext)?;
+        let mut stdout = io::stdout();
+        stdout.write_all(plaintext).map_err(OpkeError::Io)?;
+        stdout.flush().map_err(OpkeError::Io)?;
     }
-    io::stdout().flush()?;
     Ok(())
 }
 
@@ -60,28 +70,28 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
         ));
     }
 
-    // Validate limit options upfront (VULN-25)
+    // Validate limit options upfront (VULN-25, VULN-183)
     if let Some(max_m) = args.max_mem {
-        if max_m < MIN_M_KIB as i64 {
+        if max_m < MIN_M_KIB as i64 || max_m > MAX_M_KIB as i64 {
             return Err(OpkeError::Validation(format!(
-                "Invalid --max-mem: {} KiB (must be at least {} KiB)",
-                max_m, MIN_M_KIB
+                "Invalid --max-mem: {} KiB (range: {}-{})",
+                max_m, MIN_M_KIB, MAX_M_KIB
             )));
         }
     }
     if let Some(max_t) = args.max_time {
-        if max_t < MIN_T as i64 {
+        if max_t < MIN_T as i64 || max_t > MAX_T as i64 {
             return Err(OpkeError::Validation(format!(
-                "Invalid --max-time: {} (must be at least {})",
-                max_t, MIN_T
+                "Invalid --max-time: {} (range: {}-{})",
+                max_t, MIN_T, MAX_T
             )));
         }
     }
     if let Some(max_p) = args.max_threads {
-        if max_p < MIN_P as i64 {
+        if max_p < MIN_P as i64 || max_p > MAX_P as i64 {
             return Err(OpkeError::Validation(format!(
-                "Invalid --max-threads: {} (must be at least {})",
-                max_p, MIN_P
+                "Invalid --max-threads: {} (range: {}-{})",
+                max_p, MIN_P, MAX_P
             )));
         }
     }
@@ -225,12 +235,13 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
     drop(key_chacha);
     drop(key_aes);
 
-    // 6. Output plaintext (VULN-47 overwrite check, VULN-51 LF guarantee, VULN-61 "-" handling, VULN-72 warning)
+    // 6. Output plaintext (VULN-47 overwrite check, VULN-51 LF guarantee, VULN-61 "-" handling, VULN-72, VULN-127, VULN-177)
+    let allow_overwrite = args.force || args.overwrite;
     if let Some(ref out_path) = args.output {
         if out_path == "-" {
-            output_plaintext_to_stdout(plaintext.as_slice())?;
+            output_plaintext_to_stdout(plaintext.as_slice(), args.force)?;
         } else {
-            if std::path::Path::new(out_path).exists() && !args.force {
+            if std::path::Path::new(out_path).exists() && !allow_overwrite {
                 if io::stdin().is_terminal() {
                     eprint!(
                         "[?] Output file '{}' already exists. Overwrite? (y/N): ",
@@ -246,7 +257,7 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
                     }
                 } else {
                     return Err(OpkeError::Validation(format!(
-                        "Output file '{}' already exists. Use '--force' to overwrite.",
+                        "Output file '{}' already exists. Use '--force' or '--overwrite' to overwrite.",
                         out_path
                     )));
                 }
@@ -255,7 +266,7 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
             eprintln!("[+] Decrypted plaintext written to: {}", out_path);
         }
     } else {
-        output_plaintext_to_stdout(plaintext.as_slice())?;
+        output_plaintext_to_stdout(plaintext.as_slice(), args.force)?;
     }
 
     Ok(())

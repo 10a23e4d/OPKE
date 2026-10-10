@@ -4,8 +4,8 @@
 #[cfg(kani)]
 mod proofs {
     use opke::core::{
-        MAX_CIPHERTEXT_BYTES, MAX_M_KIB, MAX_P, MAX_SECRET_BYTES, MAX_T, MIN_M_KIB, MIN_P, MIN_T,
-        SUBKEY_LEN, TAG_LEN,
+        KEY_LEN, MAX_CIPHERTEXT_BYTES, MAX_M_KIB, MAX_P, MAX_SECRET_BYTES, MAX_T, MIN_M_KIB, MIN_P,
+        MIN_T, SUBKEY_LEN, TAG_LEN,
     };
 
     /// Prove that arbitrary KDF bounds checks never overflow and strictly enforce validity.
@@ -50,14 +50,30 @@ mod proofs {
     /// Prove that dual-layer key separation invariants hold.
     #[kani::proof]
     fn verify_key_separation_properties() {
-        let k1: [u8; SUBKEY_LEN] = kani::any();
-        let k2: [u8; SUBKEY_LEN] = kani::any();
+        let master_key: [u8; KEY_LEN] = kani::any();
 
-        let same = k1 == k2;
-        if same {
-            assert_eq!(k1, k2);
-        } else {
-            assert_ne!(k1, k2);
+        // Subkey extraction ranges: [0..SUBKEY_LEN] and [SUBKEY_LEN..KEY_LEN]
+        let mut key_chacha = [0u8; SUBKEY_LEN];
+        let mut key_aes = [0u8; SUBKEY_LEN];
+        key_chacha.copy_from_slice(&master_key[..SUBKEY_LEN]);
+        key_aes.copy_from_slice(&master_key[SUBKEY_LEN..]);
+
+        // Invariant 1: Disjoint subkey bounds exactly span the master key without overlap
+        assert_eq!(key_chacha.len(), SUBKEY_LEN);
+        assert_eq!(key_aes.len(), SUBKEY_LEN);
+        assert_eq!(key_chacha.len() + key_aes.len(), KEY_LEN);
+
+        // Invariant 2: Constant-time comparison equivalence with standard element-wise equality
+        let ct_equal = subtle::ConstantTimeEq::ct_eq(&key_chacha[..], &key_aes[..]);
+        let bool_equal: bool = ct_equal.into();
+        let direct_equal = key_chacha == key_aes;
+        assert_eq!(bool_equal, direct_equal);
+
+        // Invariant 3: Key derivation non-degeneracy condition mapping
+        if direct_equal {
+            for i in 0..SUBKEY_LEN {
+                assert_eq!(master_key[i], master_key[SUBKEY_LEN + i]);
+            }
         }
     }
 

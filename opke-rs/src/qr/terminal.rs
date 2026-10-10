@@ -8,10 +8,9 @@ use crate::error::OpkeError;
 /// Renders a high-contrast half-block QR code directly to a writer (e.g. stderr).
 pub fn print_terminal_qr<W: Write>(data: &str, mut out: W) -> Result<(), OpkeError> {
     if data.is_empty() {
-        writeln!(out, "[-] Terminal QR generation unavailable: data is empty")
-            .map_err(OpkeError::Io)?;
-        out.flush().map_err(OpkeError::Io)?;
-        return Ok(());
+        return Err(OpkeError::Validation(
+            "Terminal QR generation unavailable: data is empty".into(),
+        ));
     }
 
     let levels = [EcLevel::M, EcLevel::L];
@@ -26,20 +25,20 @@ pub fn print_terminal_qr<W: Write>(data: &str, mut out: W) -> Result<(), OpkeErr
     let code = match qr_code {
         Some(c) => c,
         None => {
-            writeln!(
-                out,
-                "[-] Terminal QR generation unavailable: data exceeds maximum QR code capacity (2,953 bytes)."
-            )
-            .map_err(OpkeError::Io)?;
-            out.flush().map_err(OpkeError::Io)?;
-            return Ok(());
+            return Err(OpkeError::ResourceLimit(
+                "Terminal QR generation unavailable: data exceeds maximum QR code capacity (2,953 bytes).".into(),
+            ));
         }
     };
 
     let width = code.width();
     let quiet_zone = 4; // ISO/IEC 18004 4-module quiet zone (VULN-94)
     let total_width = width + 2 * quiet_zone;
-    let total_height = width + 2 * quiet_zone;
+    let mut total_height = width + 2 * quiet_zone;
+    // Ensure total_height is even so the bottom quiet zone row is not truncated to a half-block (VULN-155)
+    if total_height % 2 != 0 {
+        total_height += 1;
+    }
 
     // Helper to sample module at (x, y) including quiet zone (white background)
     let is_dark = |x: usize, y: usize| -> bool {

@@ -54,9 +54,22 @@ fn test_v05_incomplete_file_unlinked_on_error() {
     let tmp_dir = tempfile::tempdir().unwrap();
     let target_path = tmp_dir.path().join("incomplete_file.txt");
 
-    // Writing to an invalid empty path returns validation error
+    // Writing to an invalid empty path returns validation error and creates nothing
     assert!(write_secure_file("", b"data").is_err());
     assert!(!target_path.exists());
+
+    // Writing to a directory path returns error and leaves no partial file
+    let dir_path = tmp_dir.path().join("sub_dir");
+    fs::create_dir(&dir_path).unwrap();
+    assert!(write_secure_file(&dir_path, b"data").is_err());
+
+    // Verify no temporary incomplete files remain
+    let entries: Vec<_> = fs::read_dir(tmp_dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].path(), dir_path);
 }
 
 // =========================================================================
@@ -121,6 +134,7 @@ fn test_v13_cli_arguments_secrets_rejected() {
         multiline: false,
         v2: false,
         force: false,
+        overwrite: false,
     };
     let res = cmd_encrypt::execute(enc_args_secret);
     assert!(res.is_err());
@@ -146,6 +160,7 @@ fn test_v13_cli_arguments_secrets_rejected() {
         multiline: false,
         v2: false,
         force: false,
+        overwrite: false,
     };
     let res_pass = cmd_encrypt::execute(enc_args_pass);
     assert!(res_pass.is_err());
@@ -166,6 +181,7 @@ fn test_v13_cli_arguments_secrets_rejected() {
         max_threads: None,
         allow_v2: false,
         force: false,
+        overwrite: false,
     };
     let res_dec = cmd_decrypt::execute(dec_args_pass);
     assert!(res_dec.is_err());
@@ -326,24 +342,24 @@ fn test_v19_pem_formatting_and_bounds() {
 fn test_v20_terminal_qr_reports_empty_and_overflow() {
     let mut out_empty = Vec::new();
     let res_empty = print_terminal_qr("", &mut out_empty);
-    assert!(res_empty.is_ok());
-    let s_empty = String::from_utf8(out_empty).unwrap();
+    assert!(res_empty.is_err());
+    let err_empty = res_empty.unwrap_err().to_string();
     assert!(
-        s_empty.contains("Terminal QR generation unavailable: data is empty"),
+        err_empty.contains("Terminal QR generation unavailable: data is empty"),
         "{}",
-        s_empty
+        err_empty
     );
 
     let mut out_overflow = Vec::new();
     let oversized_data = "X".repeat(5000);
     let res_overflow = print_terminal_qr(&oversized_data, &mut out_overflow);
-    assert!(res_overflow.is_ok());
-    let s_overflow = String::from_utf8(out_overflow).unwrap();
+    assert!(res_overflow.is_err());
+    let err_overflow = res_overflow.unwrap_err().to_string();
     assert!(
-        s_overflow
+        err_overflow
             .contains("Terminal QR generation unavailable: data exceeds maximum QR code capacity"),
         "{}",
-        s_overflow
+        err_overflow
     );
 }
 
@@ -393,6 +409,7 @@ fn test_v23_encrypt_profile_typo_rejected() {
         multiline: false,
         v2: false,
         force: false,
+        overwrite: false,
     };
     let res = cmd_encrypt::execute(enc_args);
     assert!(res.is_err());
@@ -420,6 +437,7 @@ fn test_v25_decrypt_limit_bounds_rejected() {
         max_threads: None,
         allow_v2: false,
         force: false,
+        overwrite: false,
     };
     let res = cmd_decrypt::execute(dec_neg_mem);
     assert!(res.is_err());
@@ -436,6 +454,7 @@ fn test_v25_decrypt_limit_bounds_rejected() {
         max_threads: None,
         allow_v2: false,
         force: false,
+        overwrite: false,
     };
     let res_t = cmd_decrypt::execute(dec_zero_t);
     assert!(res_t.is_err());
@@ -452,6 +471,7 @@ fn test_v25_decrypt_limit_bounds_rejected() {
         max_threads: Some(0),
         allow_v2: false,
         force: false,
+        overwrite: false,
     };
     let res_p = cmd_decrypt::execute(dec_zero_p);
     assert!(res_p.is_err());
@@ -465,13 +485,13 @@ fn test_v25_decrypt_limit_bounds_rejected() {
 fn test_v26_wizard_quote_stripping_logic() {
     let clean_path = |input: &str| -> String {
         let mut s = input.trim();
-        if s.len() >= 2
+        while s.len() >= 2
             && ((s.starts_with('"') && s.ends_with('"'))
                 || (s.starts_with('\'') && s.ends_with('\'')))
         {
-            s = &s[1..s.len() - 1];
+            s = s[1..s.len() - 1].trim();
         }
-        s.trim().to_string()
+        s.to_string()
     };
 
     assert_eq!(
@@ -490,4 +510,120 @@ fn test_v26_wizard_quote_stripping_logic() {
         clean_path(r#"C:\unquoted\path\key.txt"#),
         r#"C:\unquoted\path\key.txt"#
     );
+    assert_eq!(
+        clean_path(r#"""C:\doubly_quoted\path\key.txt"""#),
+        r#"C:\doubly_quoted\path\key.txt"#
+    );
+}
+
+// =========================================================================
+// VULN-132: UTF-8 BOM-prefixed envelope parsing
+// =========================================================================
+#[test]
+fn test_v27_bom_prefixed_envelope_parsed_correctly() {
+    let salt = [0u8; 16];
+    let nc = [0u8; 12];
+    let na = [1u8; 12];
+    let tag = [0u8; 16];
+    let ct = vec![42u8; 32];
+    let env = create_envelope(&salt, 65536, 2, 2, &nc, &na, &tag, &ct, Some(3)).unwrap();
+    let json = serde_json::to_string(&env).unwrap();
+    let bom_envelope = format!("\u{feff}{}", json);
+
+    let res = deserialize_envelope(&bom_envelope);
+    assert!(
+        res.is_ok(),
+        "Failed to parse BOM-prefixed envelope: {:?}",
+        res.err()
+    );
+}
+
+// =========================================================================
+// VULN-193: Weak all-zero keys rejected in cascade
+// =========================================================================
+#[test]
+fn test_v28_weak_all_zero_keys_rejected() {
+    let zero_key = [0u8; 32];
+    let valid_key = [1u8; 32];
+    let plaintext = b"test payload";
+    let aad = b"test aad";
+
+    // All zero ChaCha key rejected
+    assert!(
+        opke::core::encrypt_cascade(plaintext, &zero_key, &valid_key, None, None, Some(aad))
+            .is_err()
+    );
+    // All zero AES key rejected
+    assert!(
+        opke::core::encrypt_cascade(plaintext, &valid_key, &zero_key, None, None, Some(aad))
+            .is_err()
+    );
+}
+
+// =========================================================================
+// VULN-201: Profile Unicode Bidi character sanitization in errors
+// =========================================================================
+#[test]
+fn test_v29_profile_bidi_sanitized_in_error() {
+    let bidi_typo = "fast\u{202E}evil\u{202C}";
+    let enc_args = EncryptArgs {
+        secret: None,
+        input_file: None,
+        passphrase: None,
+        output: None,
+        profile: bidi_typo.into(),
+        mem: None,
+        time: None,
+        threads: None,
+        qr: None,
+        qr_term: false,
+        raw: false,
+        multiline: false,
+        v2: false,
+        force: false,
+        overwrite: false,
+    };
+    let res = cmd_encrypt::execute(enc_args);
+    assert!(res.is_err());
+    let msg = format!("{}", res.err().unwrap());
+    assert!(!msg.contains('\u{202E}'));
+    assert!(!msg.contains('\u{202C}'));
+}
+
+// =========================================================================
+// VULN-183: Decrypt limits upper bounds rejected
+// =========================================================================
+#[test]
+fn test_v30_decrypt_limits_upper_bounds_rejected() {
+    let dec_oversized_mem = DecryptArgs {
+        input: Some("dummy".into()),
+        input_file: None,
+        passphrase: None,
+        output: None,
+        max_mem: Some(100 * 1024 * 1024), // 100 GiB > MAX_M_KIB
+        max_time: None,
+        max_threads: None,
+        allow_v2: false,
+        force: false,
+        overwrite: false,
+    };
+    let res = cmd_decrypt::execute(dec_oversized_mem);
+    assert!(res.is_err());
+    assert!(format!("{}", res.err().unwrap()).contains("Invalid --max-mem"));
+
+    let dec_oversized_t = DecryptArgs {
+        input: Some("dummy".into()),
+        input_file: None,
+        passphrase: None,
+        output: None,
+        max_mem: None,
+        max_time: Some(200_000), // > MAX_T (100,000)
+        max_threads: None,
+        allow_v2: false,
+        force: false,
+        overwrite: false,
+    };
+    let res_t = cmd_decrypt::execute(dec_oversized_t);
+    assert!(res_t.is_err());
+    assert!(format!("{}", res_t.err().unwrap()).contains("Invalid --max-time"));
 }

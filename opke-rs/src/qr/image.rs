@@ -29,7 +29,7 @@ pub fn generate_qr_image_with_options(
     }
 
     if let Some(parent) = p.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
+        if !parent.as_os_str().is_empty() && std::fs::symlink_metadata(parent).is_err() {
             return Err(OpkeError::Validation(format!(
                 "Invalid output_path: parent directory '{}' does not exist.",
                 parent.display()
@@ -85,6 +85,7 @@ pub fn generate_qr_image_with_options(
         let svg_data = code
             .render()
             .min_dimensions(300, 300)
+            .quiet_zone(true)
             .dark_color(svg::Color("#000000"))
             .light_color(svg::Color("#ffffff"))
             .build();

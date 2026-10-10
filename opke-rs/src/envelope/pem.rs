@@ -47,32 +47,64 @@ pub fn to_paper_format(b64_payload: &str, line_length: usize) -> Result<String, 
 /// Strips PEM header/footer if present, extracting encapsulated content per RFC 7468.
 pub fn strip_pem(raw_input: &str) -> Result<String, OpkeError> {
     let text = raw_input.trim();
-    let has_header = text.contains(PEM_HEADER);
-    let has_footer = text.contains(PEM_FOOTER);
+    if !text.contains(PEM_HEADER) && !text.contains(PEM_FOOTER) {
+        return Ok(text.to_string());
+    }
 
-    if has_header || has_footer {
-        if !(has_header && has_footer) {
-            return Err(OpkeError::Envelope(
-                "Malformed PEM envelope: incomplete header or footer.".into(),
-            ));
+    let mut in_block = false;
+    let mut found_block = false;
+    let mut payload = String::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed == PEM_HEADER {
+            if in_block || found_block {
+                return Err(OpkeError::Envelope(
+                    "Multiple PEM envelope markers detected; ambiguous input.".into(),
+                ));
+            }
+            in_block = true;
+        } else if trimmed == PEM_FOOTER {
+            if !in_block {
+                return Err(OpkeError::Envelope(
+                    "Malformed PEM envelope: footer appears before header.".into(),
+                ));
+            }
+            in_block = false;
+            found_block = true;
+        } else if in_block {
+            payload.push_str(trimmed);
         }
-        if text.matches(PEM_HEADER).count() > 1 || text.matches(PEM_FOOTER).count() > 1 {
-            return Err(OpkeError::Envelope(
-                "Multiple PEM envelope markers detected; ambiguous input.".into(),
-            ));
-        }
-        let header_idx = text.find(PEM_HEADER).unwrap();
-        let footer_idx = text.find(PEM_FOOTER).unwrap();
-        let content_start = header_idx + PEM_HEADER.len();
-        if footer_idx < content_start {
+    }
+
+    if in_block {
+        return Err(OpkeError::Envelope(
+            "Malformed PEM envelope: incomplete header or footer.".into(),
+        ));
+    }
+
+    if found_block {
+        return Ok(payload);
+    }
+
+    // Fallback for compact/single-line formats where headers/footers share a line
+    if let (Some(h_pos), Some(f_pos)) = (text.find(PEM_HEADER), text.rfind(PEM_FOOTER)) {
+        if f_pos < h_pos + PEM_HEADER.len() {
             return Err(OpkeError::Envelope(
                 "Malformed PEM envelope: footer appears before header.".into(),
             ));
         }
-        // RFC 7468: Explanatory text outside the encapsulation boundaries is ignored.
-        let stripped = &text[content_start..footer_idx];
-        return Ok(stripped.trim().to_string());
+        let content = &text[h_pos + PEM_HEADER.len()..f_pos];
+        if content.contains(PEM_HEADER) || content.contains(PEM_FOOTER) {
+            return Err(OpkeError::Envelope(
+                "Multiple PEM envelope markers detected; ambiguous input.".into(),
+            ));
+        }
+        let cleaned: String = content.chars().filter(|c| !c.is_whitespace()).collect();
+        return Ok(cleaned);
     }
 
-    Ok(text.to_string())
+    Err(OpkeError::Envelope(
+        "Malformed PEM envelope: incomplete header or footer.".into(),
+    ))
 }

@@ -76,9 +76,13 @@ pub struct EncryptArgs {
     #[arg(long = "multiline")]
     pub multiline: bool,
 
-    /// Output legacy v2 envelope format
+    /// Output legacy v2 envelope format (deprecated, test only)
     #[arg(long = "v2")]
     pub v2: bool,
+
+    /// Overwrite existing destination file without interactive confirmation
+    #[arg(long = "overwrite")]
+    pub overwrite: bool,
 
     /// Bypass available memory check and force execution
     #[arg(long = "force")]
@@ -118,6 +122,10 @@ pub struct DecryptArgs {
     /// Allow decrypting legacy v2 envelopes
     #[arg(long = "allow-v2")]
     pub allow_v2: bool,
+
+    /// Overwrite existing destination file without interactive confirmation
+    #[arg(long = "overwrite")]
+    pub overwrite: bool,
 
     /// Bypass available memory check and force execution
     #[arg(long = "force")]

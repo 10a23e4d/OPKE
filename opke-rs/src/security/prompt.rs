@@ -124,13 +124,21 @@ pub fn prompt_secret(multiline: bool, max_bytes: usize) -> Result<Zeroizing<Vec<
         eprintln!(
             "[*] Multi-line secret entry:\n[*] Paste/type secret, then press Ctrl+Z (Windows) or Ctrl+D (Unix) then Enter:"
         );
-        // VULN-80: Collect fixed 8KB chunks to eliminate heap reallocations that leak unzeroized plaintext
-        let mut chunks: Vec<Zeroizing<[u8; 8192]>> = Vec::new();
+        // VULN-80, VULN-126: Collect boxed 8KB chunks so vector reallocation moves pointers only,
+        // eliminating shallow copy leaks of unzeroized plaintext in previous heap chunks.
+        let mut chunks: Vec<Box<Zeroizing<[u8; 8192]>>> = Vec::new();
         let mut total_len = 0usize;
         let mut stdin = io::stdin().lock();
         loop {
-            let mut chunk = Zeroizing::new([0u8; 8192]);
-            let n = stdin.read(&mut *chunk)?;
+            // VULN-158: Check size limit upfront before accumulating more chunks
+            if total_len >= max_bytes {
+                return Err(OpkeError::Validation(format!(
+                    "Secret input exceeds maximum allowed size ({} bytes).",
+                    max_bytes
+                )));
+            }
+            let mut chunk = Box::new(Zeroizing::new([0u8; 8192]));
+            let n = stdin.read(&mut **chunk)?;
             if n == 0 {
                 break;
             }

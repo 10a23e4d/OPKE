@@ -114,11 +114,12 @@ fn validate_file_path(p: &Path) -> Result<(), OpkeError> {
     }
 
     // 1. Check for NTFS Alternate Data Streams (ADS: filename:stream)
-    // Strip Windows verbatim / device prefix (\\?\ or \\.\) if present (VULN-86)
-    let stripped = if s.starts_with(r"\\?\") || s.starts_with(r"\\.\") {
-        &s[4..]
+    // Strip Windows verbatim / device prefix (\\?\ or \\.\ or //?/ or //./) if present (VULN-86, VULN-139)
+    let s_norm = s.replace('/', "\\");
+    let stripped = if s_norm.starts_with(r"\\?\") || s_norm.starts_with(r"\\.\") {
+        &s_norm[4..]
     } else {
-        &s[..]
+        &s_norm[..]
     };
 
     // Allow standard Windows drive specifier (e.g., C:\ or D:/)
@@ -138,22 +139,40 @@ fn validate_file_path(p: &Path) -> Result<(), OpkeError> {
         )));
     }
 
-    // 2. Check for Windows reserved device names in all components (VULN-39, VULN-87)
+    // 2. Check for Windows reserved device names in all components (VULN-39, VULN-87, VULN-137)
     let reserved = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
         "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "CONIN$",
-        "CONOUT$",
+        "CONOUT$", "CLOCK$",
     ];
 
     for comp in p.components() {
         if let std::path::Component::Normal(os_str) = comp {
             if let Some(file_name) = os_str.to_str() {
-                let stem = std::path::Path::new(file_name)
+                // Normalize superscript digits (e.g. COM¹ -> COM1) (VULN-138)
+                let norm_chars: String = file_name
+                    .chars()
+                    .map(|c| match c {
+                        '⁰' => '0',
+                        '¹' => '1',
+                        '²' => '2',
+                        '³' => '3',
+                        '⁴' => '4',
+                        '⁵' => '5',
+                        '⁶' => '6',
+                        '⁷' => '7',
+                        '⁸' => '8',
+                        '⁹' => '9',
+                        _ => c,
+                    })
+                    .collect();
+
+                let stem = std::path::Path::new(&norm_chars)
                     .file_stem()
                     .and_then(|st| st.to_str())
-                    .unwrap_or(file_name)
+                    .unwrap_or(&norm_chars)
                     .to_ascii_uppercase();
-                let full = file_name.to_ascii_uppercase();
+                let full = norm_chars.to_ascii_uppercase();
 
                 if reserved.contains(&stem.as_str()) || reserved.contains(&full.as_str()) {
                     return Err(OpkeError::Validation(format!(
@@ -176,20 +195,26 @@ pub fn read_secure_file(
     let p = path.as_ref();
     validate_file_path(p)?;
 
-    if !p.exists() {
-        return Err(OpkeError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("File not found: {}", p.display()),
-        )));
-    }
-
-    // Pre-check for symlinks and non-regular files to fail fast
-    let sym_meta = std::fs::symlink_metadata(p)?;
+    // Pre-check for symlinks and non-regular files to fail fast (VULN-215)
+    let sym_meta = match std::fs::symlink_metadata(p) {
+        Ok(m) => m,
+        Err(e) => return Err(OpkeError::Io(e)),
+    };
     if sym_meta.file_type().is_symlink() {
         return Err(OpkeError::Validation(format!(
             "Refusing to read symlink for security: {}",
             p.display()
         )));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if (sym_meta.file_attributes() & 0x0400) != 0 {
+            return Err(OpkeError::Validation(format!(
+                "Refusing to read reparse point / junction for security: {}",
+                p.display()
+            )));
+        }
     }
     if !sym_meta.is_file() {
         return Err(OpkeError::Validation(format!(
@@ -246,7 +271,7 @@ pub fn read_secure_file(
         }
     }
 
-    // Fully preallocate buffer with exact file length to eliminate reallocation plaintext leak (VULN-28)
+    // Fully preallocate buffer with exact file length to eliminate reallocation plaintext leak (VULN-28, VULN-145)
     let mut buf = Zeroizing::new(Vec::with_capacity(file_len));
     let mut chunk = Zeroizing::new([0u8; 65536]);
 
@@ -255,14 +280,24 @@ pub fn read_secure_file(
         if n == 0 {
             break;
         }
-        buf.extend_from_slice(&chunk[..n]);
-        if buf.len() > max_bytes {
+        if buf.len() + n > max_bytes {
             return Err(OpkeError::Validation(format!(
                 "File '{}' exceeds maximum allowed size ({} bytes).",
                 p.display(),
                 max_bytes
             )));
         }
+        // If file grew beyond initial capacity, allocate a new zeroized buffer with exact required capacity
+        // and safely copy, ensuring old buffer drops and zeroizes immediately without unzeroized shallow copy.
+        if buf.len() + n > buf.capacity() {
+            let new_cap = (buf.len() + n)
+                .max(buf.capacity().saturating_mul(2))
+                .min(max_bytes);
+            let mut new_buf = Zeroizing::new(Vec::with_capacity(new_cap));
+            new_buf.extend_from_slice(&buf);
+            buf = new_buf;
+        }
+        buf.extend_from_slice(&chunk[..n]);
     }
 
     Ok(buf)
@@ -332,17 +367,26 @@ fn validate_existing_file_security(p: &Path) -> Result<(), OpkeError> {
 
         let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
         let ok = unsafe { GetFileInformationByHandle(handle as *mut _, info.as_mut_ptr()) };
-        if ok != 0 {
-            let info = unsafe { info.assume_init() };
-            if info.nNumberOfLinks > 1 {
-                return Err(OpkeError::Validation(format!(
-                    "Refusing to write to hardlink target for security: {}",
-                    p.display()
-                )));
-            }
+        if ok == 0 {
+            let err = std::io::Error::last_os_error();
+            return Err(OpkeError::Io(std::io::Error::new(
+                err.kind(),
+                format!(
+                    "Failed to get file information on '{}': {}",
+                    p.display(),
+                    err
+                ),
+            )));
+        }
+        let info = unsafe { info.assume_init() };
+        if info.nNumberOfLinks > 1 {
+            return Err(OpkeError::Validation(format!(
+                "Refusing to write to hardlink target for security: {}",
+                p.display()
+            )));
         }
 
-        // VULN-67: Verify owner SID of existing file matches current process user SID
+        // VULN-67, VULN-140: Verify owner SID of existing file matches current process user SID
         let mut owner_sid: *mut std::ffi::c_void = std::ptr::null_mut();
         let mut file_sd: *mut std::ffi::c_void = std::ptr::null_mut();
         let ret = unsafe {
@@ -357,14 +401,26 @@ fn validate_existing_file_security(p: &Path) -> Result<(), OpkeError> {
                 &mut file_sd,
             )
         };
-        if ret == 0 && !owner_sid.is_null() {
+        if ret != 0 {
+            let err = std::io::Error::from_raw_os_error(ret as i32);
+            return Err(OpkeError::Io(std::io::Error::new(
+                err.kind(),
+                format!(
+                    "Failed to get file security info on '{}': {}",
+                    p.display(),
+                    err
+                ),
+            )));
+        }
+        if !owner_sid.is_null() {
             let mut token_handle: *mut std::ffi::c_void = std::ptr::null_mut();
             let token_ok =
                 unsafe { OpenProcessToken(GetCurrentProcess(), 0x0008, &mut token_handle) };
             if token_ok != 0 && !token_handle.is_null() {
-                let mut token_user_buf = [0u8; 256];
+                // VULN-156: Dynamic buffer allocation if 256 bytes is insufficient
+                let mut token_user_buf = vec![0u8; 256];
                 let mut ret_len = 0u32;
-                let info_ok = unsafe {
+                let mut info_ok = unsafe {
                     GetTokenInformation(
                         token_handle,
                         1, // TokenUser
@@ -373,6 +429,18 @@ fn validate_existing_file_security(p: &Path) -> Result<(), OpkeError> {
                         &mut ret_len,
                     )
                 };
+                if info_ok == 0 && ret_len > token_user_buf.len() as u32 {
+                    token_user_buf.resize(ret_len as usize, 0);
+                    info_ok = unsafe {
+                        GetTokenInformation(
+                            token_handle,
+                            1,
+                            token_user_buf.as_mut_ptr() as *mut _,
+                            token_user_buf.len() as u32,
+                            &mut ret_len,
+                        )
+                    };
+                }
                 unsafe {
                     CloseHandle(token_handle);
                 }
@@ -422,7 +490,8 @@ fn apply_windows_dacl(
     _p: &Path,
     force: bool,
 ) -> Result<(), OpkeError> {
-    let sddl: Vec<u16> = "D:P(A;;FA;;;OW)\0".encode_utf16().collect();
+    // VULN-151: Remove redundant \0 byte literal in SDDL string
+    let sddl: Vec<u16> = "D:P(A;;FA;;;OW)".encode_utf16().chain(Some(0)).collect();
     let mut sd = std::ptr::null_mut();
     let mut sd_size = 0u32;
     let conv_ok = unsafe {
@@ -512,6 +581,7 @@ fn write_secure_file_internal(
         options.create_new(true);
     } else {
         options.create(true);
+        options.truncate(true); // VULN-141: Truncate in-place to prevent tail remnants
     }
 
     #[cfg(unix)]
@@ -524,11 +594,39 @@ fn write_secure_file_internal(
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        options.access_mode(0x80000000 | 0x40000000 | 0x00040000);
+        if _force {
+            options.access_mode(0x80000000 | 0x40000000); // GENERIC_READ | GENERIC_WRITE (without WRITE_DAC, VULN-175)
+        } else {
+            options.access_mode(0x80000000 | 0x40000000 | 0x00040000); // with WRITE_DAC
+        }
         options.share_mode(0x00000001 | 0x00000002 | 0x00000004);
     }
 
-    let mut file = options.open(p)?;
+    let mut file = match options.open(p) {
+        Ok(f) => f,
+        Err(e) => {
+            #[cfg(windows)]
+            if _force && e.kind() == std::io::ErrorKind::PermissionDenied {
+                // VULN-175: Retry opening without WRITE_DAC if permission was denied under --force
+                use std::os::windows::fs::OpenOptionsExt;
+                let mut retry_options = OpenOptions::new();
+                retry_options.write(true);
+                if create_new {
+                    retry_options.create_new(true);
+                } else {
+                    retry_options.create(true);
+                    retry_options.truncate(true);
+                }
+                retry_options.access_mode(0x80000000 | 0x40000000);
+                retry_options.share_mode(0x00000001 | 0x00000002 | 0x00000004);
+                retry_options.open(p)?
+            } else {
+                return Err(OpkeError::Io(e));
+            }
+            #[cfg(not(windows))]
+            return Err(OpkeError::Io(e));
+        }
+    };
 
     let meta = file.metadata()?;
     if !meta.is_file() {
@@ -568,12 +666,19 @@ fn write_secure_file_internal(
         let handle = file.as_raw_handle();
         apply_windows_dacl(handle as *mut _, p, _force)?;
 
-        // VULN-62, VULN-96: Mandatory file locking on Windows with return check
+        // VULN-62, VULN-96, VULN-128: Mandatory file locking on Windows with return check
         unsafe {
             let ok = LockFile(handle as *mut _, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF);
             if ok == 0 {
                 let err = std::io::Error::last_os_error();
-                eprintln!("[!] Warning: LockFile failed on '{}': {}", p.display(), err);
+                return Err(OpkeError::Io(std::io::Error::new(
+                    err.kind(),
+                    format!(
+                        "Failed to acquire exclusive lock on '{}': {}",
+                        p.display(),
+                        err
+                    ),
+                )));
             }
         }
     }
@@ -633,6 +738,16 @@ pub fn write_secure_file_with_options(
                 "Refusing to write to symlink for security: {}",
                 p.display()
             )));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if (sym_meta.file_attributes() & 0x0400) != 0 {
+                return Err(OpkeError::Validation(format!(
+                    "Refusing to write to reparse point / junction for security: {}",
+                    p.display()
+                )));
+            }
         }
         if !sym_meta.is_file() {
             return Err(OpkeError::Validation(format!(

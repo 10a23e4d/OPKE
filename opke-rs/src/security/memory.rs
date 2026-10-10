@@ -86,7 +86,7 @@ pub fn lock_memory(ptr: *const u8, len: usize) -> bool {
         let mut max_ws = 0usize;
         if GetProcessWorkingSetSize(proc, &mut min_ws, &mut max_ws) != 0 {
             let new_min = min_ws.saturating_add(len);
-            let new_max = max_ws.saturating_add(len * 2);
+            let new_max = max_ws.saturating_add(len.saturating_mul(2));
             let _ = SetProcessWorkingSetSize(proc, new_min, new_max);
             return VirtualLock(ptr as *const _, len) != 0;
         }

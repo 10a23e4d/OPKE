@@ -37,14 +37,32 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         ));
     }
 
+    if args.v2 {
+        eprintln!("[!] 警告: '--v2' は非推奨の旧バージョン互換フラグです。本番環境での使用は推奨されません。");
+    }
+
     // 1. Resolve and validate KDF parameters
     let profile = match get_profile(&args.profile) {
         Some(p) => p,
         None => {
-            // Sanitize profile argument to prevent ANSI injection (VULN-121)
-            let sanitized: String = args.profile.chars().filter(|c| !c.is_control()).collect();
+            // Sanitize profile argument to prevent ANSI and Unicode Bidi injection (VULN-121, VULN-201)
+            let sanitized: String = args
+                .profile
+                .chars()
+                .filter(|c| {
+                    !c.is_control()
+                        && !matches!(
+                            c,
+                            '\u{200E}'
+                                | '\u{200F}'
+                                | '\u{061C}'
+                                | '\u{202A}'..='\u{202E}'
+                                | '\u{2066}'..='\u{2069}'
+                        )
+                })
+                .collect();
             return Err(OpkeError::Validation(format!(
-                "Unknown profile: '{}'. Choose from 'production', 'moderate', or 'fast'.",
+                "Unknown profile: '{}'. Choose from 'production' (or 'standard'), 'moderate', or 'fast'.",
                 sanitized
             )));
         }
@@ -97,12 +115,13 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         read_secure_file(path, MAX_SECRET_BYTES)?
     } else if !io::stdin().is_terminal() {
         let mut take = io::stdin().take((MAX_SECRET_BYTES + 1) as u64);
-        // VULN-80: Read in fixed 8KB chunks to eliminate heap reallocations that leak unzeroized plaintext
-        let mut chunks: Vec<Zeroizing<[u8; 8192]>> = Vec::new();
+        // VULN-80, VULN-126: Collect boxed 8KB chunks so vector reallocation moves pointers only,
+        // eliminating shallow copy leaks of unzeroized plaintext in previous heap chunks.
+        let mut chunks: Vec<Box<Zeroizing<[u8; 8192]>>> = Vec::new();
         let mut total_len = 0usize;
         loop {
-            let mut chunk = Zeroizing::new([0u8; 8192]);
-            let n = take.read(&mut *chunk)?;
+            let mut chunk = Box::new(Zeroizing::new([0u8; 8192]));
+            let n = take.read(&mut **chunk)?;
             if n == 0 {
                 break;
             }
@@ -207,7 +226,9 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         aad.as_deref(),
     )?;
 
-    // Immediately drop lock guards and subkeys after cascade encryption (VULN-69)
+    // Immediately drop lock guards, subkeys, and secret plaintext after cascade encryption (VULN-69, VULN-135)
+    drop(_lock_secret);
+    drop(secret_bytes);
     drop(_lock_chacha);
     drop(_lock_aes);
     drop(key_chacha);
@@ -229,19 +250,28 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
     let paper_output = envelope.to_paper_format()?;
     let raw_b64 = envelope.to_base64_payload()?;
 
+    let allow_overwrite = args.force || args.overwrite;
+
     // 6. Save or Output Envelope
     if let Some(ref out_path) = args.output {
         if out_path == "-" {
-            // Write to stdout (VULN-61)
+            // Write to stdout using write_all to avoid BrokenPipe panic (VULN-61, VULN-176)
+            let mut stdout = io::stdout();
             if args.raw {
-                println!("{}", raw_b64);
+                stdout
+                    .write_all(raw_b64.as_bytes())
+                    .map_err(OpkeError::Io)?;
+                stdout.write_all(b"\n").map_err(OpkeError::Io)?;
             } else {
-                print!("{}", paper_output);
+                stdout
+                    .write_all(paper_output.as_bytes())
+                    .map_err(OpkeError::Io)?;
             }
+            stdout.flush().map_err(OpkeError::Io)?;
         } else {
-            // Prevent silent overwrite without --force (VULN-47)
+            // Prevent silent overwrite without --force or --overwrite (VULN-47, VULN-127)
             let p_out = std::path::Path::new(out_path);
-            if p_out.exists() && !args.force {
+            if p_out.exists() && !allow_overwrite {
                 if io::stdin().is_terminal() {
                     eprintln!(
                         "[!] 警告: 出力先ファイル '{}' は既に存在します。",
@@ -253,12 +283,12 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
                     let _ = io::stdin().read_line(&mut ans);
                     if !ans.trim().eq_ignore_ascii_case("y") {
                         return Err(OpkeError::Validation(
-                            "既存ファイルの上書きがキャンセルされました。上書きを強制するには '--force' を指定してください。".into(),
+                            "既存ファイルの上書きがキャンセルされました。上書きを強制するには '--force' または '--overwrite' を指定してください。".into(),
                         ));
                     }
                 } else {
                     return Err(OpkeError::Validation(format!(
-                        "出力先ファイル '{}' は既に存在します。上書きするには '--force' を指定してください。",
+                        "出力先ファイル '{}' は既に存在します。上書きするには '--force' または '--overwrite' を指定してください。",
                         p_out.display()
                     )));
                 }
@@ -273,17 +303,25 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
             eprintln!("[+] Encrypted envelope written to: {}", out_path);
         }
     } else {
+        // Write to stdout using write_all to avoid BrokenPipe panic (VULN-176)
+        let mut stdout = io::stdout();
         if args.raw {
-            println!("{}", raw_b64);
+            stdout
+                .write_all(raw_b64.as_bytes())
+                .map_err(OpkeError::Io)?;
+            stdout.write_all(b"\n").map_err(OpkeError::Io)?;
         } else {
-            print!("{}", paper_output);
+            stdout
+                .write_all(paper_output.as_bytes())
+                .map_err(OpkeError::Io)?;
         }
+        stdout.flush().map_err(OpkeError::Io)?;
     }
 
-    // 7. QR Code generation if requested (propagating force, VULN-32, VULN-75)
+    // 7. QR Code generation if requested (propagating force, VULN-32, VULN-75, VULN-127)
     if let Some(ref qr_path) = args.qr {
         let p_qr = std::path::Path::new(qr_path);
-        if p_qr.exists() && !args.force {
+        if p_qr.exists() && !allow_overwrite {
             if io::stdin().is_terminal() {
                 eprintln!(
                     "[!] 警告: QRコード保存先ファイル '{}' は既に存在します。",
@@ -295,12 +333,12 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
                 let _ = io::stdin().read_line(&mut ans);
                 if !ans.trim().eq_ignore_ascii_case("y") {
                     return Err(OpkeError::Validation(
-                        "既存QRコードファイルの上書きがキャンセルされました。上書きを強制するには '--force' を指定してください。".into(),
+                        "既存QRコードファイルの上書きがキャンセルされました。上書きを強制するには '--force' または '--overwrite' を指定してください。".into(),
                     ));
                 }
             } else {
                 return Err(OpkeError::Validation(format!(
-                    "QRコード保存先ファイル '{}' は既に存在します。上書きするには '--force' を指定してください。",
+                    "QRコード保存先ファイル '{}' は既に存在します。上書きするには '--force' または '--overwrite' を指定してください。",
                     p_qr.display()
                 )));
             }

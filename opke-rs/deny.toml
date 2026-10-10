@@ -1,8 +1,8 @@
 # cargo-deny configuration for OPKE
 
 [advisories]
-unmaintained = "none"
-yanked = "warn"
+unmaintained = "warn"
+yanked = "deny"
 
 [licenses]
 unused-allowed-license = "allow"

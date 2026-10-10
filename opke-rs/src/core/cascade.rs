@@ -9,7 +9,7 @@ use aes_gcm::{
 use chacha20poly1305::{ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce};
 use rand::{rngs::OsRng, RngCore};
 use subtle::ConstantTimeEq;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::OpkeError;
 
@@ -40,6 +40,11 @@ pub fn encrypt_cascade(
             "Plaintext exceeds maximum allowed size ({} bytes).",
             MAX_SECRET_BYTES
         )));
+    }
+    if key_chacha.iter().all(|&b| b == 0) || key_aes.iter().all(|&b| b == 0) {
+        return Err(OpkeError::Validation(
+            "Subkeys must not be all-zero weak keys.".into(),
+        ));
     }
     if bool::from(key_chacha.as_slice().ct_eq(key_aes.as_slice())) {
         return Err(OpkeError::Validation(
@@ -127,6 +132,7 @@ pub fn encrypt_cascade(
     let ciphertext_len = l2_blob.len() - TAG_LEN;
     let mut tag_aes = [0u8; TAG_LEN];
     tag_aes.copy_from_slice(&l2_blob[ciphertext_len..]);
+    l2_blob[ciphertext_len..].zeroize();
     l2_blob.truncate(ciphertext_len);
 
     Ok((l2_blob, tag_aes, n_chacha, n_aes))
@@ -160,6 +166,11 @@ pub fn decrypt_cascade(
     if bool::from(nonce_chacha.as_slice().ct_eq(nonce_aes.as_slice())) {
         return Err(OpkeError::Validation(
             "Nonce_ChaCha and Nonce_AES must be distinct.".into(),
+        ));
+    }
+    if key_chacha.iter().all(|&b| b == 0) || key_aes.iter().all(|&b| b == 0) {
+        return Err(OpkeError::Validation(
+            "Subkeys must not be all-zero weak keys.".into(),
         ));
     }
     if bool::from(key_chacha.as_slice().ct_eq(key_aes.as_slice())) {
@@ -199,14 +210,15 @@ pub fn decrypt_cascade(
 
     // Layer 1: ChaCha20-Poly1305 Decryption (in-place)
     let ct_len = buf.len() - TAG_LEN;
-    let mut chacha_tag_bytes = [0u8; TAG_LEN];
+    let mut chacha_tag_bytes = Zeroizing::new([0u8; TAG_LEN]);
     chacha_tag_bytes.copy_from_slice(&buf[ct_len..]);
+    buf[ct_len..].zeroize(); // VULN-178: Explicitly zeroize spare capacity before truncate
     buf.truncate(ct_len);
 
     let chacha_key = ChaChaKey::from_slice(key_chacha);
     let chacha_cipher = ChaCha20Poly1305::new(chacha_key);
     let chacha_nonce = ChaChaNonce::from_slice(nonce_chacha);
-    let chacha_tag = Tag::<ChaCha20Poly1305>::from_slice(&chacha_tag_bytes);
+    let chacha_tag = Tag::<ChaCha20Poly1305>::from_slice(chacha_tag_bytes.as_slice());
 
     chacha_cipher
         .decrypt_in_place_detached(chacha_nonce, aad_bytes, &mut buf, chacha_tag)
