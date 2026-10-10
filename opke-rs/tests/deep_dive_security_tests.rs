@@ -250,6 +250,14 @@ fn test_v109_pem_rfc7468_surrounding_text_allowed() {
         stripped.err()
     );
     assert_eq!(stripped.unwrap(), base64_payload);
+
+    // Malformed overlapping header/footer: -----BEGIN OPKE ENVELOPE-----END OPKE ENVELOPE-----
+    let overlapping = "-----BEGIN OPKE ENVELOPE-----END OPKE ENVELOPE-----";
+    let res_overlap = pem::strip_pem(overlapping);
+    assert!(
+        res_overlap.is_err(),
+        "Overlapping header/footer must return error, not panic"
+    );
 }
 
 // =========================================================================

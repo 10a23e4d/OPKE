@@ -63,13 +63,13 @@ pub fn strip_pem(raw_input: &str) -> Result<String, OpkeError> {
         }
         let header_idx = text.find(PEM_HEADER).unwrap();
         let footer_idx = text.find(PEM_FOOTER).unwrap();
-        if footer_idx < header_idx {
+        let content_start = header_idx + PEM_HEADER.len();
+        if footer_idx < content_start {
             return Err(OpkeError::Envelope(
                 "Malformed PEM envelope: footer appears before header.".into(),
             ));
         }
         // RFC 7468: Explanatory text outside the encapsulation boundaries is ignored.
-        let content_start = header_idx + PEM_HEADER.len();
         let stripped = &text[content_start..footer_idx];
         return Ok(stripped.trim().to_string());
     }
