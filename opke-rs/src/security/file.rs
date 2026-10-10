@@ -149,30 +149,12 @@ fn validate_file_path(p: &Path) -> Result<(), OpkeError> {
     for comp in p.components() {
         if let std::path::Component::Normal(os_str) = comp {
             if let Some(file_name) = os_str.to_str() {
-                // Normalize superscript digits (e.g. COM¹ -> COM1) (VULN-138)
-                let norm_chars: String = file_name
-                    .chars()
-                    .map(|c| match c {
-                        '⁰' => '0',
-                        '¹' => '1',
-                        '²' => '2',
-                        '³' => '3',
-                        '⁴' => '4',
-                        '⁵' => '5',
-                        '⁶' => '6',
-                        '⁷' => '7',
-                        '⁸' => '8',
-                        '⁹' => '9',
-                        _ => c,
-                    })
-                    .collect();
-
-                let stem = std::path::Path::new(&norm_chars)
+                let stem = std::path::Path::new(file_name)
                     .file_stem()
                     .and_then(|st| st.to_str())
-                    .unwrap_or(&norm_chars)
+                    .unwrap_or(file_name)
                     .to_ascii_uppercase();
-                let full = norm_chars.to_ascii_uppercase();
+                let full = file_name.to_ascii_uppercase();
 
                 if reserved.contains(&stem.as_str()) || reserved.contains(&full.as_str()) {
                     return Err(OpkeError::Validation(format!(
@@ -330,6 +312,138 @@ fn atomic_replace_windows(from: &Path, to: &Path) -> Result<(), OpkeError> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn is_authorized_sid(owner_sid: *mut std::ffi::c_void) -> bool {
+    let mut token_handle: *mut std::ffi::c_void = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), 0x0008, &mut token_handle) } == 0
+        || token_handle.is_null()
+    {
+        return false;
+    }
+
+    let mut token_user_buf = vec![0u8; 256];
+    let mut ret_len = 0u32;
+    let mut info_ok = unsafe {
+        GetTokenInformation(
+            token_handle,
+            1, // TokenUser
+            token_user_buf.as_mut_ptr() as *mut _,
+            token_user_buf.len() as u32,
+            &mut ret_len,
+        )
+    };
+    if info_ok == 0 && ret_len > token_user_buf.len() as u32 {
+        token_user_buf.resize(ret_len as usize, 0);
+        info_ok = unsafe {
+            GetTokenInformation(
+                token_handle,
+                1,
+                token_user_buf.as_mut_ptr() as *mut _,
+                token_user_buf.len() as u32,
+                &mut ret_len,
+            )
+        };
+    }
+    unsafe {
+        CloseHandle(token_handle);
+    }
+
+    if info_ok == 0 {
+        return false;
+    }
+
+    let token_user_sid = unsafe {
+        std::ptr::read_unaligned(token_user_buf.as_ptr() as *const *mut std::ffi::c_void)
+    };
+    if unsafe { EqualSid(owner_sid, token_user_sid) } != 0 {
+        return true;
+    }
+    let mut is_member = 0i32;
+    unsafe {
+        CheckTokenMembership(std::ptr::null_mut(), owner_sid, &mut is_member) != 0 && is_member != 0
+    }
+}
+
+#[cfg(windows)]
+fn validate_windows_existing_file(p: &Path) -> Result<(), OpkeError> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    options.access_mode(0x80000000 | 0x00020000); // READ_CONTROL
+    options.share_mode(0x00000001 | 0x00000002 | 0x00000004);
+    let file = options.open(p)?;
+    let handle = file.as_raw_handle();
+
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    let ok = unsafe { GetFileInformationByHandle(handle as *mut _, info.as_mut_ptr()) };
+    if ok == 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(OpkeError::Io(std::io::Error::new(
+            err.kind(),
+            format!(
+                "Failed to get file information on '{}': {}",
+                p.display(),
+                err
+            ),
+        )));
+    }
+    let info = unsafe { info.assume_init() };
+    if info.nNumberOfLinks > 1 {
+        return Err(OpkeError::Validation(format!(
+            "Refusing to write to hardlink target for security: {}",
+            p.display()
+        )));
+    }
+
+    let mut owner_sid: *mut std::ffi::c_void = std::ptr::null_mut();
+    let mut file_sd: *mut std::ffi::c_void = std::ptr::null_mut();
+    let ret = unsafe {
+        GetSecurityInfo(
+            handle as *mut _,
+            1,          // SE_FILE_OBJECT
+            0x00000001, // OWNER_SECURITY_INFORMATION
+            &mut owner_sid,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut file_sd,
+        )
+    };
+    if ret != 0 {
+        let err = std::io::Error::from_raw_os_error(ret as i32);
+        return Err(OpkeError::Io(std::io::Error::new(
+            err.kind(),
+            format!(
+                "Failed to get file security info on '{}': {}",
+                p.display(),
+                err
+            ),
+        )));
+    }
+
+    let authorized = if !owner_sid.is_null() {
+        is_authorized_sid(owner_sid)
+    } else {
+        true
+    };
+
+    if !file_sd.is_null() {
+        unsafe {
+            LocalFree(file_sd);
+        }
+    }
+
+    if !authorized {
+        return Err(OpkeError::Validation(format!(
+            "Refusing to write to file owned by another user (Windows SID mismatch): {}",
+            p.display()
+        )));
+    }
+
+    Ok(())
+}
+
 fn validate_existing_file_security(p: &Path) -> Result<(), OpkeError> {
     #[cfg(unix)]
     {
@@ -354,132 +468,7 @@ fn validate_existing_file_security(p: &Path) -> Result<(), OpkeError> {
     }
 
     #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use std::os::windows::io::AsRawHandle;
-        let mut options = OpenOptions::new();
-        options.read(true);
-        // READ_CONTROL (0x00020000)
-        options.access_mode(0x80000000 | 0x00020000);
-        options.share_mode(0x00000001 | 0x00000002 | 0x00000004);
-        let file = options.open(p)?;
-        let handle = file.as_raw_handle();
-
-        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
-        let ok = unsafe { GetFileInformationByHandle(handle as *mut _, info.as_mut_ptr()) };
-        if ok == 0 {
-            let err = std::io::Error::last_os_error();
-            return Err(OpkeError::Io(std::io::Error::new(
-                err.kind(),
-                format!(
-                    "Failed to get file information on '{}': {}",
-                    p.display(),
-                    err
-                ),
-            )));
-        }
-        let info = unsafe { info.assume_init() };
-        if info.nNumberOfLinks > 1 {
-            return Err(OpkeError::Validation(format!(
-                "Refusing to write to hardlink target for security: {}",
-                p.display()
-            )));
-        }
-
-        // VULN-67, VULN-140: Verify owner SID of existing file matches current process user SID
-        let mut owner_sid: *mut std::ffi::c_void = std::ptr::null_mut();
-        let mut file_sd: *mut std::ffi::c_void = std::ptr::null_mut();
-        let ret = unsafe {
-            GetSecurityInfo(
-                handle as *mut _,
-                1,          // SE_FILE_OBJECT
-                0x00000001, // OWNER_SECURITY_INFORMATION
-                &mut owner_sid,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                &mut file_sd,
-            )
-        };
-        if ret != 0 {
-            let err = std::io::Error::from_raw_os_error(ret as i32);
-            return Err(OpkeError::Io(std::io::Error::new(
-                err.kind(),
-                format!(
-                    "Failed to get file security info on '{}': {}",
-                    p.display(),
-                    err
-                ),
-            )));
-        }
-        if !owner_sid.is_null() {
-            let mut token_handle: *mut std::ffi::c_void = std::ptr::null_mut();
-            let token_ok =
-                unsafe { OpenProcessToken(GetCurrentProcess(), 0x0008, &mut token_handle) };
-            if token_ok != 0 && !token_handle.is_null() {
-                // VULN-156: Dynamic buffer allocation if 256 bytes is insufficient
-                let mut token_user_buf = vec![0u8; 256];
-                let mut ret_len = 0u32;
-                let mut info_ok = unsafe {
-                    GetTokenInformation(
-                        token_handle,
-                        1, // TokenUser
-                        token_user_buf.as_mut_ptr() as *mut _,
-                        token_user_buf.len() as u32,
-                        &mut ret_len,
-                    )
-                };
-                if info_ok == 0 && ret_len > token_user_buf.len() as u32 {
-                    token_user_buf.resize(ret_len as usize, 0);
-                    info_ok = unsafe {
-                        GetTokenInformation(
-                            token_handle,
-                            1,
-                            token_user_buf.as_mut_ptr() as *mut _,
-                            token_user_buf.len() as u32,
-                            &mut ret_len,
-                        )
-                    };
-                }
-                unsafe {
-                    CloseHandle(token_handle);
-                }
-                if info_ok != 0 {
-                    let token_user_sid = unsafe {
-                        std::ptr::read_unaligned(
-                            token_user_buf.as_ptr() as *const *mut std::ffi::c_void
-                        )
-                    };
-                    let mut is_authorized_owner = false;
-                    let same = unsafe { EqualSid(owner_sid, token_user_sid) };
-                    if same != 0 {
-                        is_authorized_owner = true;
-                    } else {
-                        let mut is_member = 0i32;
-                        let mem_ok = unsafe {
-                            CheckTokenMembership(std::ptr::null_mut(), owner_sid, &mut is_member)
-                        };
-                        if mem_ok != 0 && is_member != 0 {
-                            is_authorized_owner = true;
-                        }
-                    }
-
-                    if !is_authorized_owner {
-                        unsafe {
-                            LocalFree(file_sd);
-                        }
-                        return Err(OpkeError::Validation(format!(
-                            "Refusing to write to file owned by another user (Windows SID mismatch): {}",
-                            p.display()
-                        )));
-                    }
-                }
-            }
-            unsafe {
-                LocalFree(file_sd);
-            }
-        }
-    }
+    validate_windows_existing_file(p)?;
 
     Ok(())
 }

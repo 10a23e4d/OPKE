@@ -4,38 +4,35 @@ use base64::prelude::*;
 use rand::{rngs::OsRng, RngCore};
 use std::io::{self, IsTerminal, Read, Write};
 use std::time::Instant;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::core::{
-    derive_key_and_split, encrypt_cascade, get_profile, MAX_M_KIB, MAX_P, MAX_SECRET_BYTES, MAX_T,
-    MIN_M_KIB, MIN_P, MIN_T, NONCE_LEN, SALT_LEN,
+    derive_key_and_split, encrypt_cascade, get_profile, validate_kdf_params, MAX_SECRET_BYTES,
+    NONCE_LEN, SALT_LEN,
 };
 use crate::envelope::create_envelope;
 use crate::error::OpkeError;
 use crate::qr::{generate_qr_image_with_options, print_terminal_qr_stderr};
 use crate::security::{
     get_available_memory_kib, prompt_passphrase, prompt_secret, read_secure_file,
-    scrub_cmdline_targets, scrub_env_passphrase, write_secure_file_with_options, MemoryLockGuard,
+    scrub_env_passphrase, write_secure_file_with_options, MemoryLockGuard,
 };
 
 use super::args::EncryptArgs;
+use super::reject_sensitive_arg;
 
-pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
-    // 0. Prohibit passing plaintext secrets or passphrases via CLI args (VULN-13, VULN-103)
-    if let Some(mut sec) = args.secret {
-        scrub_cmdline_targets(&[&sec]);
-        sec.zeroize();
-        return Err(OpkeError::Validation(
-            "Passing secrets as command-line arguments is strictly prohibited for security.\nPlease use interactive prompt, stdin pipe, or provide a file via '-i / --input-file'.".into(),
-        ));
-    }
-    if let Some(mut pass) = args.passphrase {
-        scrub_cmdline_targets(&[&pass]);
-        pass.zeroize();
-        return Err(OpkeError::Validation(
-            "Passing passphrases as command-line arguments is strictly prohibited for security.\nPlease use interactive prompt or set the 'OPKE_PASSPHRASE' environment variable.".into(),
-        ));
-    }
+pub fn execute(mut args: EncryptArgs) -> Result<(), OpkeError> {
+    // 0. Prohibit passing plaintext secrets or passphrases via CLI args
+    reject_sensitive_arg(
+        &mut args.secret,
+        "secrets",
+        "Please use interactive prompt, stdin pipe, or provide a file via '-i / --input-file'.",
+    )?;
+    reject_sensitive_arg(
+        &mut args.passphrase,
+        "passphrases",
+        "Please use interactive prompt or set the 'OPKE_PASSPHRASE' environment variable.",
+    )?;
 
     if args.v2 {
         eprintln!("[!] 警告: '--v2' は非推奨の旧バージョン互換フラグです。本番環境での使用は推奨されません。");
@@ -45,7 +42,7 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
     let profile = match get_profile(&args.profile) {
         Some(p) => p,
         None => {
-            // Sanitize profile argument to prevent ANSI and Unicode Bidi injection (VULN-121, VULN-201)
+            // Sanitize profile argument to prevent ANSI and Unicode Bidi injection
             let sanitized: String = args
                 .profile
                 .chars()
@@ -72,33 +69,9 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
     let t = args.time.unwrap_or(profile.t);
     let p = args.threads.unwrap_or(profile.p);
 
-    if !(MIN_M_KIB..=MAX_M_KIB).contains(&m_kib) {
-        return Err(OpkeError::Validation(format!(
-            "Invalid memory cost: {} KiB (range: {}-{})",
-            m_kib, MIN_M_KIB, MAX_M_KIB
-        )));
-    }
-    if !(MIN_P..=MAX_P).contains(&p) {
-        return Err(OpkeError::Validation(format!(
-            "Invalid parallelism: {} (range: {}-{})",
-            p, MIN_P, MAX_P
-        )));
-    }
-    if !(MIN_T..=MAX_T).contains(&t) {
-        return Err(OpkeError::Validation(format!(
-            "Invalid time cost: {} (range: {}-{})",
-            t, MIN_T, MAX_T
-        )));
-    }
-    if m_kib < 8 * p {
-        return Err(OpkeError::Validation(format!(
-            "Invalid memory cost: {} KiB (Argon2 requires m >= 8 * p = {} KiB)",
-            m_kib,
-            8 * p
-        )));
-    }
+    validate_kdf_params(m_kib, t, p)?;
 
-    // Check system RAM availability to prevent OOM freezes (with 10% safety margin, VULN-110)
+    // Check system RAM availability to prevent OOM freezes (with 10% safety margin)
     if let Some(avail_kib) = get_available_memory_kib() {
         let required_kib = (m_kib as u64).saturating_add((m_kib as u64) / 10);
         if required_kib > avail_kib && !args.force {
@@ -115,7 +88,7 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         read_secure_file(path, MAX_SECRET_BYTES)?
     } else if !io::stdin().is_terminal() {
         let mut take = io::stdin().take((MAX_SECRET_BYTES + 1) as u64);
-        // VULN-80, VULN-126: Collect boxed 8KB chunks so vector reallocation moves pointers only,
+        // Collect boxed 8KB chunks so vector reallocation moves pointers only,
         // eliminating shallow copy leaks of unzeroized plaintext in previous heap chunks.
         let mut chunks: Vec<Box<Zeroizing<[u8; 8192]>>> = Vec::new();
         let mut total_len = 0usize;
@@ -153,7 +126,7 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         return Err(OpkeError::Validation("Secret cannot be empty.".into()));
     }
 
-    // VULN-85: Lock plaintext secret into physical RAM to prevent paging to disk during heavy Argon2id
+    // Lock plaintext secret into physical RAM to prevent paging to disk during heavy Argon2id
     let _lock_secret = MemoryLockGuard::try_lock(&secret_bytes);
 
     // 3. Resolve passphrase
@@ -177,11 +150,11 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
 
     let (key_chacha, key_aes) = derive_key_and_split(passphrase.as_bytes(), &salt, m_kib, t, p)?;
 
-    // VULN-76: Lock derived subkeys at caller stack frame in physical RAM
+    // Lock derived subkeys at caller stack frame in physical RAM
     let _lock_chacha = MemoryLockGuard::try_lock(&*key_chacha);
     let _lock_aes = MemoryLockGuard::try_lock(&*key_aes);
 
-    // Immediately drop passphrase after key derivation (VULN-36, VULN-68)
+    // Immediately drop passphrase after key derivation
     drop(passphrase);
 
     let kdf_elapsed = t0.elapsed();
@@ -190,7 +163,7 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         kdf_elapsed.as_secs_f64()
     );
 
-    // 4. Perform Cascade AEAD Encryption with Nonce Preparation & AAD Commitment (VULN-41)
+    // 4. Perform Cascade AEAD Encryption with Nonce Preparation & AAD Commitment
     let target_version = if args.v2 { 2 } else { 3 };
     let mut nonce_chacha = [0u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce_chacha);
@@ -226,7 +199,7 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         aad.as_deref(),
     )?;
 
-    // Immediately drop lock guards, subkeys, and secret plaintext after cascade encryption (VULN-69, VULN-135)
+    // Immediately drop lock guards, subkeys, and secret plaintext after cascade encryption
     drop(_lock_secret);
     drop(secret_bytes);
     drop(_lock_chacha);
@@ -255,7 +228,7 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
     // 6. Save or Output Envelope
     if let Some(ref out_path) = args.output {
         if out_path == "-" {
-            // Write to stdout using write_all to avoid BrokenPipe panic (VULN-61, VULN-176)
+            // Write to stdout using write_all to avoid BrokenPipe panic
             let mut stdout = io::stdout();
             if args.raw {
                 stdout
@@ -269,7 +242,7 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
             }
             stdout.flush().map_err(OpkeError::Io)?;
         } else {
-            // Prevent silent overwrite without --force or --overwrite (VULN-47, VULN-127)
+            // Prevent silent overwrite without --force or --overwrite
             let p_out = std::path::Path::new(out_path);
             if p_out.exists() && !allow_overwrite {
                 if io::stdin().is_terminal() {
@@ -303,7 +276,7 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
             eprintln!("[+] Encrypted envelope written to: {}", out_path);
         }
     } else {
-        // Write to stdout using write_all to avoid BrokenPipe panic (VULN-176)
+        // Write to stdout using write_all to avoid BrokenPipe panic
         let mut stdout = io::stdout();
         if args.raw {
             stdout
@@ -318,7 +291,7 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         stdout.flush().map_err(OpkeError::Io)?;
     }
 
-    // 7. QR Code generation if requested (propagating force, VULN-32, VULN-75, VULN-127)
+    // 7. QR Code generation if requested (propagating force)
     if let Some(ref qr_path) = args.qr {
         let p_qr = std::path::Path::new(qr_path);
         if p_qr.exists() && !allow_overwrite {

@@ -19,7 +19,7 @@ pub fn pause_for_exit() {
 }
 
 /// Prompts user for a line of text, automatically trimming surrounding quotes (Windows drag-and-drop).
-/// Returns OpkeError::Validation on EOF to prevent infinite busy loops (VULN-31).
+/// Returns OpkeError::Validation on EOF to prevent infinite busy loops.
 pub fn prompt_line(prompt: &str) -> Result<String, OpkeError> {
     print!("{}", prompt);
     let _ = io::stdout().flush();
@@ -39,19 +39,27 @@ pub fn prompt_line(prompt: &str) -> Result<String, OpkeError> {
     Ok(s.to_string())
 }
 
-/// Prompts for an output file path, prompting to confirm overwrite if file exists (VULN-22).
-/// If overwrite is rejected, re-prompts for a different file path.
-fn prompt_output_file(prompt: &str, default: &str) -> Result<Option<String>, OpkeError> {
+/// Prompts for an output file path, prompting to confirm overwrite if file exists.
+/// Supports default fallback and skipping/optional input.
+fn prompt_destination_file(
+    prompt: &str,
+    default: Option<&str>,
+) -> Result<Option<String>, OpkeError> {
     loop {
         let input = prompt_line(prompt)?;
         let path_str = if input.is_empty() {
-            default.to_string()
+            match default {
+                Some(d) => d.to_string(),
+                None => return Ok(None),
+            }
         } else {
             input
         };
+
         if path_str.eq_ignore_ascii_case("skip") {
             return Ok(None);
         }
+
         let p = std::path::Path::new(&path_str);
         if p.exists() {
             eprintln!(
@@ -71,37 +79,11 @@ fn prompt_output_file(prompt: &str, default: &str) -> Result<Option<String>, Opk
     }
 }
 
-/// Prompts for an optional output file path, confirming overwrite if existing.
-fn prompt_optional_output_file(prompt: &str) -> Result<Option<String>, OpkeError> {
-    loop {
-        let input = prompt_line(prompt)?;
-        if input.is_empty() {
-            return Ok(None);
-        }
-        let p = std::path::Path::new(&input);
-        if p.exists() {
-            eprintln!(
-                "[!] 警告: 出力先ファイル '{}' は既に存在します。",
-                p.display()
-            );
-            let ans = prompt_line("上書きしますか？ (y/N): ")?;
-            if ans.eq_ignore_ascii_case("y") {
-                return Ok(Some(input));
-            } else {
-                println!("[*] 別の出力ファイル名を指定してください。");
-                continue;
-            }
-        } else {
-            return Ok(Some(input));
-        }
-    }
-}
-
 pub fn run_interactive_wizard() -> Result<(), OpkeError> {
     loop {
         println!();
         println!("============================================================");
-        println!("       OPKE v3.0 (Offline Paper-Key Encryptor)             ");
+        println!("       OPKE v3.1 (Offline Paper-Key Encryptor)             ");
         println!("       オフライン・ペーパーキー暗号化ツール                 ");
         println!("============================================================");
         println!(" [1] 秘密情報を暗号化 (Encrypt -> Paper Key / QR)");
@@ -143,14 +125,14 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                     Some(in_file)
                 };
 
-                let output = prompt_output_file(
+                let output = prompt_destination_file(
                     "ペーパーキー出力ファイル名 [デフォルト: paper_key.txt, 'skip'で画面出力]: ",
-                    "paper_key.txt",
+                    Some("paper_key.txt"),
                 )?;
 
-                let qr = prompt_output_file(
+                let qr = prompt_destination_file(
                     "QRコード画像保存ファイル名 [デフォルト: paper_key.png, 'skip'でスキップ]: ",
-                    "paper_key.png",
+                    Some("paper_key.png"),
                 )?;
 
                 let qr_term_ans =
@@ -198,11 +180,12 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                     Some(in_file)
                 };
 
-                let output = prompt_optional_output_file(
+                let output = prompt_destination_file(
                     "復号平文の保存先ファイル名 (空欄で画面に直接表示): ",
+                    None,
                 )?;
 
-                // VULN-50: Warn user about shoulder surfing before direct screen output
+                // Warn user about shoulder surfing before direct screen output
                 if output.is_none() {
                     println!(
                         "[!] 警告: 保存先ファイルを指定しない場合、平文が画面に直接表示されます。"

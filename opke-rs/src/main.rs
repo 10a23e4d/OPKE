@@ -1,4 +1,4 @@
-//! Main executable entrypoint for OPKE v3.0.
+//! Main executable entrypoint for OPKE v3.1.
 
 use clap::Parser;
 use std::process;
@@ -7,7 +7,7 @@ use opke::cli::args::{Cli, Commands};
 use opke::cli::{cmd_benchmark, cmd_decrypt, cmd_encrypt, cmd_inspect, wizard};
 
 fn main() {
-    // Disable core dumps and crash report dialogs (WER) to prevent memory dumps to disk (VULN-44, VULN-212)
+    // Disable core dumps and crash report dialogs (WER) to prevent memory dumps to disk
     #[cfg(windows)]
     unsafe {
         extern "system" {
@@ -20,7 +20,7 @@ fn main() {
         libc::prctl(libc::PR_SET_DUMPABLE, 0);
     }
 
-    // Register clean SIGINT/Ctrl+C handler to prevent dangling secrets (VULN-56, VULN-83, VULN-116)
+    // Register clean SIGINT/Ctrl+C handler to prevent dangling secrets
     if let Err(e) = ctrlc::set_handler(move || {
         eprintln!("\n[!] 中断シグナル (Ctrl+C) を受信しました。終了します。");
         process::exit(130);
@@ -28,7 +28,6 @@ fn main() {
         eprintln!("[!] Warning: Failed to set Ctrl+C signal handler: {}", e);
     }
 
-    // VULN-125: Eliminate std::env::args().len() heap allocation of sensitive arguments.
     // Parse CLI directly; if no subcommand is supplied, launch wizard mode.
     let cli = Cli::parse();
     let is_wizard = cli.command.is_none();

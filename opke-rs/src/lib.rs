@@ -1,4 +1,4 @@
-//! OPKE v3.0 (Offline Paper-Key Encryptor) Core Library.
+//! OPKE v3.1 (Offline Paper-Key Encryptor) Core Library.
 
 pub mod cli;
 pub mod core;

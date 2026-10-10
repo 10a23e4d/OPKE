@@ -139,7 +139,7 @@ pub fn encrypt_cascade(
 }
 
 /// Decrypts ciphertext through inverse dual AEAD cascade (Layer 2 AES-256-GCM then Layer 1 ChaCha20-Poly1305).
-/// Order of nonces matches encrypt_cascade (nonce_chacha then nonce_aes) (VULN-59).
+/// Order of nonces matches encrypt_cascade (nonce_chacha then nonce_aes).
 /// Returns zeroized plaintext buffer.
 pub fn decrypt_cascade(
     final_ciphertext: &[u8],
@@ -181,7 +181,7 @@ pub fn decrypt_cascade(
 
     let aad_bytes = aad.unwrap_or(b"");
 
-    // Preallocate zeroized working buffer for in-place cascade decryption (VULN-101)
+    // Preallocate zeroized working buffer for in-place cascade decryption
     let mut buf = Zeroizing::new(Vec::with_capacity(final_ciphertext.len()));
     buf.extend_from_slice(final_ciphertext);
 
@@ -191,7 +191,7 @@ pub fn decrypt_cascade(
     let aes_nonce = AesNonce::from_slice(nonce_aes);
     let aes_tag = Tag::<Aes256Gcm>::from_slice(tag_aes);
 
-    // Uniform authentication failure message to eliminate multi-layer oracle (VULN-42)
+    // Uniform authentication failure message to eliminate multi-layer oracle
     aes_cipher
         .decrypt_in_place_detached(aes_nonce, aad_bytes, &mut buf, aes_tag)
         .map_err(|_| {
@@ -212,7 +212,7 @@ pub fn decrypt_cascade(
     let ct_len = buf.len() - TAG_LEN;
     let mut chacha_tag_bytes = Zeroizing::new([0u8; TAG_LEN]);
     chacha_tag_bytes.copy_from_slice(&buf[ct_len..]);
-    buf[ct_len..].zeroize(); // VULN-178: Explicitly zeroize spare capacity before truncate
+    buf[ct_len..].zeroize(); // Explicitly zeroize spare capacity before truncate
     buf.truncate(ct_len);
 
     let chacha_key = ChaChaKey::from_slice(key_chacha);

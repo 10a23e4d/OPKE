@@ -2,7 +2,7 @@
 
 use std::io::{self, IsTerminal, Read, Write};
 use std::time::Instant;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::core::{
     decrypt_cascade, derive_key_and_split, MAX_M_KIB, MAX_P, MAX_T, MIN_M_KIB, MIN_P, MIN_T,
@@ -10,13 +10,14 @@ use crate::core::{
 use crate::envelope::{deserialize_envelope, MAX_ENVELOPE_CHARS};
 use crate::error::OpkeError;
 use crate::security::{
-    get_available_memory_kib, prompt_passphrase, read_secure_file, scrub_cmdline_targets,
-    scrub_env_passphrase, write_secure_file_with_options, MemoryLockGuard,
+    get_available_memory_kib, prompt_passphrase, read_secure_file, scrub_env_passphrase,
+    write_secure_file_with_options, MemoryLockGuard,
 };
 
 use super::args::DecryptArgs;
+use super::reject_sensitive_arg;
 
-const DEFAULT_MAX_MEM_KIB: u64 = 8 * 1024 * 1024; // 8 GiB default limit (VULN-63)
+const DEFAULT_MAX_MEM_KIB: u64 = 8 * 1024 * 1024; // 8 GiB default memory limit
 
 fn read_stdin_envelope() -> Result<String, OpkeError> {
     let mut take = io::stdin().take((MAX_ENVELOPE_CHARS + 1) as u64);
@@ -33,7 +34,7 @@ fn read_stdin_envelope() -> Result<String, OpkeError> {
 
 fn output_plaintext_to_stdout(plaintext: &[u8], force: bool) -> Result<(), OpkeError> {
     if io::stdout().is_terminal() {
-        // VULN-72, VULN-177: Refuse binary control characters / ANSI escape sequences unless force
+        // Refuse binary control characters / ANSI escape sequences unless force
         let has_control = plaintext
             .iter()
             .any(|&b| (b < 0x20 && b != b'\t' && b != b'\n' && b != b'\r') || b == 0x7f);
@@ -47,7 +48,7 @@ fn output_plaintext_to_stdout(plaintext: &[u8], force: bool) -> Result<(), OpkeE
         }
         let mut stdout = io::stdout();
         stdout.write_all(plaintext).map_err(OpkeError::Io)?;
-        // VULN-51: Ensure trailing newline on terminal
+        // Ensure trailing newline on terminal
         if !plaintext.is_empty() && !plaintext.ends_with(b"\n") {
             stdout.write_all(b"\n").map_err(OpkeError::Io)?;
         }
@@ -60,17 +61,15 @@ fn output_plaintext_to_stdout(plaintext: &[u8], force: bool) -> Result<(), OpkeE
     Ok(())
 }
 
-pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
-    // 0. Prohibit passing passphrases via CLI args (VULN-13, VULN-103)
-    if let Some(mut pass) = args.passphrase {
-        scrub_cmdline_targets(&[&pass]);
-        pass.zeroize();
-        return Err(OpkeError::Validation(
-            "Passing passphrases as command-line arguments is strictly prohibited for security.\nPlease use interactive prompt or set the 'OPKE_PASSPHRASE' environment variable.".into(),
-        ));
-    }
+pub fn execute(mut args: DecryptArgs) -> Result<(), OpkeError> {
+    // 0. Prohibit passing passphrases via CLI args
+    reject_sensitive_arg(
+        &mut args.passphrase,
+        "passphrases",
+        "Please use interactive prompt or set the 'OPKE_PASSPHRASE' environment variable.",
+    )?;
 
-    // Validate limit options upfront (VULN-25, VULN-183)
+    // Validate limit options upfront
     if let Some(max_m) = args.max_mem {
         if max_m < MIN_M_KIB as i64 || max_m > MAX_M_KIB as i64 {
             return Err(OpkeError::Validation(format!(
@@ -126,7 +125,7 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
     // 2. Parse and validate envelope
     let envelope = deserialize_envelope(&raw_input)?;
 
-    // VULN-41: Prevent envelope downgrade attacks. Legacy v2 requires explicit --allow-v2
+    // Prevent envelope downgrade attacks. Legacy v2 requires explicit --allow-v2
     if envelope.v == 2 && !args.allow_v2 {
         return Err(OpkeError::Validation(
             "Envelope format is legacy v2. Use '--allow-v2' to permit decrypting legacy v2 envelopes.".into(),
@@ -138,7 +137,7 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
     let t = envelope.kdf.t;
     let p = envelope.kdf.p;
 
-    // VULN-63: Enforce default memory limit if --max-mem not specified
+    // Enforce default memory limit if --max-mem not specified
     let effective_max_m = args.max_mem.unwrap_or(DEFAULT_MAX_MEM_KIB as i64);
     if (m_kib as i64) > effective_max_m && !args.force {
         return Err(OpkeError::ResourceLimit(format!(
@@ -195,11 +194,11 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
     let (key_chacha, key_aes) =
         derive_key_and_split(passphrase.as_bytes(), &decoded.salt, m_kib, t, p)?;
 
-    // VULN-76: Lock subkeys at caller stack frame in physical RAM
+    // Lock subkeys at caller stack frame in physical RAM
     let _lock_chacha = MemoryLockGuard::try_lock(&*key_chacha);
     let _lock_aes = MemoryLockGuard::try_lock(&*key_aes);
 
-    // VULN-68: Immediately drop passphrase
+    // Immediately drop passphrase
     drop(passphrase);
 
     let kdf_elapsed = t0.elapsed();
@@ -208,7 +207,7 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
         kdf_elapsed.as_secs_f64()
     );
 
-    // 5. Decrypt and Authenticate Cascade (VULN-41 AAD binding, VULN-59 unified nonce order)
+    // 5. Decrypt and Authenticate Cascade (AAD binding, unified nonce order)
     let aad = envelope.compute_aad();
     let aad_ref = if aad.is_empty() {
         None
@@ -226,16 +225,16 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
         aad_ref,
     )?;
 
-    // VULN-85: Lock decrypted plaintext into physical RAM
+    // Lock decrypted plaintext into physical RAM
     let _lock_plain = MemoryLockGuard::try_lock(&plaintext);
 
-    // VULN-69: Immediately drop lock guards and subkeys
+    // Immediately drop lock guards and subkeys
     drop(_lock_chacha);
     drop(_lock_aes);
     drop(key_chacha);
     drop(key_aes);
 
-    // 6. Output plaintext (VULN-47 overwrite check, VULN-51 LF guarantee, VULN-61 "-" handling, VULN-72, VULN-127, VULN-177)
+    // 6. Output plaintext
     let allow_overwrite = args.force || args.overwrite;
     if let Some(ref out_path) = args.output {
         if out_path == "-" {

@@ -16,7 +16,7 @@ use crate::core::{
 use crate::error::OpkeError;
 
 pub const CURRENT_VERSION: u32 = 3;
-pub const MAX_ENVELOPE_CHARS: usize = 100 * 1024 * 1024; // 100 MiB max envelope chars (VULN-190)
+pub const MAX_ENVELOPE_CHARS: usize = 100 * 1024 * 1024; // 100 MiB max envelope chars
 
 #[derive(Debug, Clone)]
 pub struct DecodedEnvelopeBytes {
@@ -46,7 +46,7 @@ impl OPKEEnvelope {
     }
 
     /// Computes Associated Authenticated Data (AAD) for the envelope.
-    /// Returns empty bytes for v2 legacy envelopes, and serialized metadata commitment for v3 (VULN-41).
+    /// Returns empty bytes for v2 legacy envelopes, and serialized metadata commitment for v3.
     pub fn compute_aad(&self) -> Vec<u8> {
         if self.v == 2 {
             Vec::new()
@@ -68,70 +68,15 @@ impl OPKEEnvelope {
 
     /// Decodes and validates all Base64-encoded cryptographic fields.
     pub fn get_decoded_bytes(&self) -> Result<DecodedEnvelopeBytes, OpkeError> {
-        // Pre-validate Base64 string lengths to prevent giant allocations on malformed inputs (VULN-65)
-        if self.kdf.salt.len() > 24 {
-            return Err(OpkeError::Envelope(format!(
-                "Base64 salt length exceeds maximum allowed bound (24 chars, got {}).",
-                self.kdf.salt.len()
-            )));
-        }
-        if self.cipher.nonce_chacha.len() > 16 {
-            return Err(OpkeError::Envelope(format!(
-                "Base64 nonce_chacha length exceeds maximum allowed bound (16 chars, got {}).",
-                self.cipher.nonce_chacha.len()
-            )));
-        }
-        if self.cipher.nonce_aes.len() > 16 {
-            return Err(OpkeError::Envelope(format!(
-                "Base64 nonce_aes length exceeds maximum allowed bound (16 chars, got {}).",
-                self.cipher.nonce_aes.len()
-            )));
-        }
-        if self.cipher.tag_aes.len() > 24 {
-            return Err(OpkeError::Envelope(format!(
-                "Base64 tag_aes length exceeds maximum allowed bound (24 chars, got {}).",
-                self.cipher.tag_aes.len()
-            )));
-        }
-
-        let salt_vec = BASE64_STANDARD
-            .decode(&self.kdf.salt)
-            .map_err(|e| OpkeError::Envelope(format!("Invalid Base64 salt: {}", e)))?;
-        if salt_vec.len() != SALT_LEN {
-            return Err(OpkeError::Envelope(format!(
-                "Salt length must be {} bytes, got {}",
-                SALT_LEN,
-                salt_vec.len()
-            )));
-        }
-        let mut salt = [0u8; SALT_LEN];
-        salt.copy_from_slice(&salt_vec);
-
-        let nc_vec = BASE64_STANDARD
-            .decode(&self.cipher.nonce_chacha)
-            .map_err(|e| OpkeError::Envelope(format!("Invalid Base64 nonce_chacha: {}", e)))?;
-        if nc_vec.len() != NONCE_LEN {
-            return Err(OpkeError::Envelope(format!(
-                "Nonce_ChaCha length must be {} bytes, got {}",
-                NONCE_LEN,
-                nc_vec.len()
-            )));
-        }
-        let mut nonce_chacha = [0u8; NONCE_LEN];
-        nonce_chacha.copy_from_slice(&nc_vec);
-
-        let na_vec = BASE64_STANDARD
-            .decode(&self.cipher.nonce_aes)
-            .map_err(|e| OpkeError::Envelope(format!("Invalid Base64 nonce_aes: {}", e)))?;
-        if na_vec.len() != NONCE_LEN {
-            return Err(OpkeError::Envelope(format!(
-                "Nonce_AES length must be {} bytes, got {}",
-                NONCE_LEN,
-                na_vec.len()
-            )));
-        }
-        let mut nonce_aes = [0u8; NONCE_LEN];
-        nonce_aes.copy_from_slice(&na_vec);
+        let salt = decode_b64_field::<SALT_LEN>(&self.kdf.salt, "salt", "Salt", 24)?;
+        let nonce_chacha = decode_b64_field::<NONCE_LEN>(
+            &self.cipher.nonce_chacha,
+            "nonce_chacha",
+            "Nonce_ChaCha",
+            16,
+        )?;
+        let nonce_aes =
+            decode_b64_field::<NONCE_LEN>(&self.cipher.nonce_aes, "nonce_aes", "Nonce_AES", 16)?;
 
         if nonce_chacha.ct_eq(&nonce_aes).into() {
             return Err(OpkeError::Envelope(
@@ -139,18 +84,7 @@ impl OPKEEnvelope {
             ));
         }
 
-        let tag_vec = BASE64_STANDARD
-            .decode(&self.cipher.tag_aes)
-            .map_err(|e| OpkeError::Envelope(format!("Invalid Base64 tag_aes: {}", e)))?;
-        if tag_vec.len() != TAG_LEN {
-            return Err(OpkeError::Envelope(format!(
-                "Tag_AES length must be {} bytes, got {}",
-                TAG_LEN,
-                tag_vec.len()
-            )));
-        }
-        let mut tag_aes = [0u8; TAG_LEN];
-        tag_aes.copy_from_slice(&tag_vec);
+        let tag_aes = decode_b64_field::<TAG_LEN>(&self.cipher.tag_aes, "tag_aes", "Tag_AES", 24)?;
 
         let max_b64_len = MAX_CIPHERTEXT_BYTES.div_ceil(3) * 4 + 4;
         if self.data.len() > max_b64_len {
@@ -280,133 +214,115 @@ pub fn create_envelope(
     })
 }
 
-/// Validates that a JSON string does not contain duplicate keys in any object (RFC 8259 compliance / VULN-33, VULN-78).
-fn validate_no_duplicate_json_keys(json: &str) -> Result<(), OpkeError> {
-    use std::collections::HashSet;
-    let mut in_string = false;
-    let mut current_key = String::new();
-    let mut collecting_key = false;
-    let mut expecting_colon = false;
-    let mut object_stack: Vec<HashSet<String>> = Vec::new();
-    let mut chars = json.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if in_string {
-            if c == '\\' {
-                if let Some(esc) = chars.next() {
-                    let decoded_char = match esc {
-                        '"' => Some('"'),
-                        '\\' => Some('\\'),
-                        '/' => Some('/'),
-                        'b' => Some('\x08'),
-                        'f' => Some('\x0C'),
-                        'n' => Some('\n'),
-                        'r' => Some('\r'),
-                        't' => Some('\t'),
-                        'u' => {
-                            let mut hex = String::with_capacity(4);
-                            for _ in 0..4 {
-                                if let Some(h) = chars.next() {
-                                    hex.push(h);
-                                }
-                            }
-                            if let Ok(val) = u32::from_str_radix(&hex, 16) {
-                                if (0xD800..=0xDBFF).contains(&val) {
-                                    if chars.peek() == Some(&'\\') {
-                                        chars.next();
-                                        if chars.peek() == Some(&'u') {
-                                            chars.next();
-                                            let mut low_hex = String::with_capacity(4);
-                                            for _ in 0..4 {
-                                                if let Some(h) = chars.next() {
-                                                    low_hex.push(h);
-                                                }
-                                            }
-                                            if let Ok(low_val) = u32::from_str_radix(&low_hex, 16) {
-                                                if (0xDC00..=0xDFFF).contains(&low_val) {
-                                                    let codepoint = 0x10000
-                                                        + ((val - 0xD800) << 10)
-                                                        + (low_val - 0xDC00);
-                                                    char::from_u32(codepoint)
-                                                } else {
-                                                    char::from_u32(val)
-                                                }
-                                            } else {
-                                                char::from_u32(val)
-                                            }
-                                        } else {
-                                            char::from_u32(val)
-                                        }
-                                    } else {
-                                        char::from_u32(val)
-                                    }
-                                } else {
-                                    char::from_u32(val)
-                                }
-                            } else {
-                                None
-                            }
-                        }
-                        other => Some(other),
-                    };
-                    if collecting_key {
-                        if let Some(ch) = decoded_char {
-                            current_key.push(ch);
-                        }
-                    }
-                }
-            } else if c == '"' {
-                in_string = false;
-                if collecting_key {
-                    collecting_key = false;
-                    expecting_colon = true;
-                }
-            } else if collecting_key {
-                current_key.push(c);
-            }
-            continue;
-        }
-
-        match c {
-            '"' => {
-                in_string = true;
-                if !expecting_colon && !object_stack.is_empty() {
-                    collecting_key = true;
-                    current_key.clear();
-                }
-            }
-            ':' => {
-                if expecting_colon {
-                    expecting_colon = false;
-                    if let Some(keys) = object_stack.last_mut() {
-                        if !keys.insert(current_key.clone()) {
-                            return Err(OpkeError::Envelope(format!(
-                                "Duplicate JSON key detected: '{}' (RFC 8259 violation)",
-                                current_key
-                            )));
-                        }
-                    }
-                }
-            }
-            '{' => {
-                expecting_colon = false;
-                if object_stack.len() >= 32 {
-                    return Err(OpkeError::Envelope(
-                        "JSON exceeds maximum nesting depth (32).".into(),
-                    ));
-                }
-                object_stack.push(HashSet::new());
-            }
-            '}' => {
-                expecting_colon = false;
-                object_stack.pop();
-            }
-            ',' => {
-                expecting_colon = false;
-            }
-            _ => {}
-        }
+fn decode_b64_field<const N: usize>(
+    val: &str,
+    name: &str,
+    display_name: &str,
+    max_b64_len: usize,
+) -> Result<[u8; N], OpkeError> {
+    if val.len() > max_b64_len {
+        return Err(OpkeError::Envelope(format!(
+            "Base64 {} length exceeds maximum allowed bound ({} chars, got {}).",
+            name,
+            max_b64_len,
+            val.len()
+        )));
     }
+    let decoded = BASE64_STANDARD
+        .decode(val)
+        .map_err(|e| OpkeError::Envelope(format!("Invalid Base64 {}: {}", name, e)))?;
+    if decoded.len() != N {
+        return Err(OpkeError::Envelope(format!(
+            "{} length must be {} bytes, got {}",
+            display_name,
+            N,
+            decoded.len()
+        )));
+    }
+    let mut out = [0u8; N];
+    out.copy_from_slice(&decoded);
+    Ok(out)
+}
+
+struct DuplicateKeyVisitor;
+
+impl<'de> serde::de::Visitor<'de> for DuplicateKeyVisitor {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a valid JSON value without duplicate keys")
+    }
+
+    fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E> {
+        Ok(())
+    }
+    fn visit_i64<E>(self, _v: i64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+    fn visit_u64<E>(self, _v: u64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+    fn visit_f64<E>(self, _v: f64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+    fn visit_str<E>(self, _v: &str) -> Result<Self::Value, E> {
+        Ok(())
+    }
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(())
+    }
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_seq<S>(self, mut access: S) -> Result<Self::Value, S::Error>
+    where
+        S: serde::de::SeqAccess<'de>,
+    {
+        while access.next_element_seed(DuplicateKeyVisitor)?.is_some() {}
+        Ok(())
+    }
+
+    fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+    where
+        M: serde::de::MapAccess<'de>,
+    {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        while let Some(key) = access.next_key::<String>()? {
+            if !seen.insert(key.clone()) {
+                return Err(serde::de::Error::custom(format!(
+                    "Duplicate JSON key detected: '{}' (RFC 8259 violation)",
+                    key
+                )));
+            }
+            access.next_value_seed(DuplicateKeyVisitor)?;
+        }
+        Ok(())
+    }
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for DuplicateKeyVisitor {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(DuplicateKeyVisitor)
+    }
+}
+
+/// Validates that a JSON string does not contain duplicate keys in any object (RFC 8259 compliance).
+fn validate_no_duplicate_json_keys(json: &str) -> Result<(), OpkeError> {
+    use serde::de::DeserializeSeed;
+    let mut deserializer = serde_json::Deserializer::from_str(json);
+    DuplicateKeyVisitor
+        .deserialize(&mut deserializer)
+        .map_err(|e| OpkeError::Envelope(e.to_string()))?;
+    deserializer
+        .end()
+        .map_err(|e| OpkeError::Envelope(e.to_string()))?;
     Ok(())
 }
 
@@ -445,7 +361,7 @@ pub fn deserialize_envelope(raw_input: &str) -> Result<OPKEEnvelope, OpkeError> 
         return Err(OpkeError::Envelope("Envelope payload is empty.".into()));
     }
 
-    // 2. Determine if payload is JSON or Base64-encoded JSON (VULN-95: preserve raw JSON whitespace, VULN-132: UTF-8 BOM support)
+    // 2. Determine if payload is JSON or Base64-encoded JSON (preserves raw JSON whitespace, UTF-8 BOM support)
     let json_str = if trimmed_payload.starts_with('{') && trimmed_payload.ends_with('}') {
         trimmed_payload.to_string()
     } else {
@@ -464,7 +380,7 @@ pub fn deserialize_envelope(raw_input: &str) -> Result<OPKEEnvelope, OpkeError> 
         })?
     };
 
-    // Strict duplicate key detection to prevent parser differential attacks (VULN-33)
+    // Strict duplicate key detection to prevent parser differential attacks
     validate_no_duplicate_json_keys(&json_str)?;
 
     // 3. Parse JSON into OPKEEnvelope with strict field verification
@@ -512,7 +428,7 @@ pub fn deserialize_envelope(raw_input: &str) -> Result<OPKEEnvelope, OpkeError> 
         )));
     }
 
-    // 6. Validate Cipher layers (bounded error formatting to prevent DoS, VULN-73, VULN-198)
+    // 6. Validate Cipher layers (bounded error formatting to prevent DoS)
     let expected_layers = vec!["chacha20-poly1305".to_string(), "aes-256-gcm".to_string()];
     let normalized_layers: Vec<String> = envelope
         .cipher

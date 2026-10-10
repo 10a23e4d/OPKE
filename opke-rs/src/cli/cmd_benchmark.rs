@@ -2,9 +2,7 @@
 
 use std::time::Instant;
 
-use crate::core::{
-    derive_key_and_split, get_profile, MAX_M_KIB, MAX_P, MAX_T, MIN_M_KIB, MIN_P, MIN_T,
-};
+use crate::core::{derive_key_and_split, get_profile, validate_kdf_params};
 use crate::error::OpkeError;
 use crate::security::get_available_memory_kib;
 
@@ -25,39 +23,9 @@ pub fn execute(args: BenchmarkArgs) -> Result<(), OpkeError> {
     let t = args.time.unwrap_or(profile.t);
     let p = args.threads.unwrap_or(profile.p);
 
-    if m_kib < MIN_M_KIB {
-        return Err(OpkeError::Validation(format!(
-            "Invalid memory cost: {} KiB (must be at least {} KiB)",
-            m_kib, MIN_M_KIB
-        )));
-    }
-    if m_kib > MAX_M_KIB {
-        return Err(OpkeError::Validation(format!(
-            "Invalid memory cost: {} KiB (exceeds maximum allowed {} KiB)",
-            m_kib, MAX_M_KIB
-        )));
-    }
-    if !(MIN_P..=MAX_P).contains(&p) {
-        return Err(OpkeError::Validation(format!(
-            "Invalid parallelism: {} (must be between {} and {})",
-            p, MIN_P, MAX_P
-        )));
-    }
-    if m_kib < 8 * p {
-        return Err(OpkeError::Validation(format!(
-            "Invalid memory cost: {} KiB (Argon2 requires m >= 8 * p = {} KiB)",
-            m_kib,
-            8 * p
-        )));
-    }
-    if !(MIN_T..=MAX_T).contains(&t) {
-        return Err(OpkeError::Validation(format!(
-            "Invalid time cost: {} (must be between {} and {})",
-            t, MIN_T, MAX_T
-        )));
-    }
+    validate_kdf_params(m_kib, t, p)?;
 
-    // Check available RAM to prevent system freeze / OOM (VULN-14)
+    // Check available RAM to prevent system freeze / OOM DoS
     if let Some(avail_kib) = get_available_memory_kib() {
         if (m_kib as u64) > avail_kib && !args.force {
             let m_gib = (m_kib as f64) / 1024.0 / 1024.0;

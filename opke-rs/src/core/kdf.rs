@@ -18,8 +18,43 @@ pub const MIN_P: u32 = 1;
 pub const MAX_P: u32 = 256;
 pub const MAX_PASSPHRASE_BYTES: usize = 4096;
 
+/// Validates Argon2id KDF parameters against strict system and algorithm bounds.
+pub fn validate_kdf_params(m_kib: u32, t: u32, p: u32) -> Result<(), OpkeError> {
+    let max_arch_kib = if usize::BITS <= 32 {
+        (u32::MAX / 1024).min(MAX_M_KIB)
+    } else {
+        MAX_M_KIB
+    };
+    if m_kib < MIN_M_KIB || m_kib > max_arch_kib {
+        return Err(OpkeError::Validation(format!(
+            "Invalid memory cost: {} KiB (range: {}-{})",
+            m_kib, MIN_M_KIB, max_arch_kib
+        )));
+    }
+    if !(MIN_P..=MAX_P).contains(&p) {
+        return Err(OpkeError::Validation(format!(
+            "Invalid parallelism: {} (range: {}-{})",
+            p, MIN_P, MAX_P
+        )));
+    }
+    if !(MIN_T..=MAX_T).contains(&t) {
+        return Err(OpkeError::Validation(format!(
+            "Invalid time cost: {} (range: {}-{})",
+            t, MIN_T, MAX_T
+        )));
+    }
+    if m_kib < 8 * p {
+        return Err(OpkeError::Validation(format!(
+            "Invalid memory cost: {} KiB (Argon2 requires m >= 8 * p = {} KiB)",
+            m_kib,
+            8 * p
+        )));
+    }
+    Ok(())
+}
+
 /// Derives a 64-byte key using Argon2id (v0x13) and splits it into two 32-byte keys.
-/// Normalizes passphrase to Unicode NFC if valid UTF-8 (VULN-55) and locks derived keys in RAM (VULN-54).
+/// Normalizes passphrase to Unicode NFC if valid UTF-8 and locks derived keys in RAM.
 ///
 /// Returns `(Key_ChaCha, Key_AES)`, both zeroized on drop.
 #[allow(clippy::type_complexity)]
@@ -46,36 +81,7 @@ pub fn derive_key_and_split(
             salt.len()
         )));
     }
-    if !(MIN_P..=MAX_P).contains(&p) {
-        return Err(OpkeError::Validation(format!(
-            "Parallelism must be between {} and {}, got {}",
-            MIN_P, MAX_P, p
-        )));
-    }
-    if !(MIN_T..=MAX_T).contains(&t) {
-        return Err(OpkeError::Validation(format!(
-            "Time cost must be between {} and {}, got {}",
-            MIN_T, MAX_T, t
-        )));
-    }
-    let max_arch_kib = if usize::BITS <= 32 {
-        (u32::MAX / 1024).min(MAX_M_KIB)
-    } else {
-        MAX_M_KIB
-    };
-    if m_kib < MIN_M_KIB || m_kib > max_arch_kib {
-        return Err(OpkeError::Validation(format!(
-            "Memory cost must be between {} KiB and {} KiB, got {} KiB",
-            MIN_M_KIB, max_arch_kib, m_kib
-        )));
-    }
-    if m_kib < 8 * p {
-        return Err(OpkeError::Validation(format!(
-            "Memory cost too low: {} KiB (Argon2 requires m_kib >= 8 * p = {} KiB)",
-            m_kib,
-            8 * p
-        )));
-    }
+    validate_kdf_params(m_kib, t, p)?;
 
     // Unicode NFC Normalization (VULN-55, VULN-84, VULN-136)
     let norm_pass: Zeroizing<Vec<u8>> = if let Ok(s) = std::str::from_utf8(passphrase) {
