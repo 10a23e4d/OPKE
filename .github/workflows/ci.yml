@@ -137,7 +137,7 @@ jobs:
       - name: Install Nightly Rust
         uses: dtolnay/rust-toolchain@nightly
         with:
-          targets: x86_64-unknown-linux-musl
+          targets: x86_64-unknown-linux-gnu
           components: llvm-tools-preview
 
       - name: Install cargo-fuzz
@@ -167,7 +167,7 @@ jobs:
           echo "$LIST_OUT"
           if [ $LIST_ST -ne 0 ]; then exit $LIST_ST; fi
 
-          BUILD_OUT=$(cargo +nightly fuzz build --sanitizer none 2>&1)
+          BUILD_OUT=$(cargo +nightly fuzz build --target x86_64-unknown-linux-gnu --sanitizer none 2>&1)
           BUILD_ST=$?
           echo "### cargo fuzz build (Exit $BUILD_ST)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -179,7 +179,7 @@ jobs:
       - name: Run libFuzzer smoke test (fuzz_envelope & fuzz_cascade)
         run: |
           set +e
-          OUT1=$(cargo +nightly fuzz run fuzz_envelope --sanitizer none -- -runs=1000 -max_total_time=5 -max_len=4096 2>&1)
+          OUT1=$(cargo +nightly fuzz run fuzz_envelope --target x86_64-unknown-linux-gnu --sanitizer none -- -runs=1000 -max_total_time=5 -max_len=4096 2>&1)
           ST1=$?
           echo "### fuzz_envelope (Exit $ST1)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -187,7 +187,7 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "$OUT1"
 
-          OUT2=$(cargo +nightly fuzz run fuzz_cascade --sanitizer none -- -runs=1000 -max_total_time=5 -max_len=4096 2>&1)
+          OUT2=$(cargo +nightly fuzz run fuzz_cascade --target x86_64-unknown-linux-gnu --sanitizer none -- -runs=1000 -max_total_time=5 -max_len=4096 2>&1)
           ST2=$?
           echo "### fuzz_cascade (Exit $ST2)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
