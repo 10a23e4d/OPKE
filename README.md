@@ -1,12 +1,12 @@
 **English** | [日本語](README_ja.md)
 
-# OPKE v3.0.3 (Offline Paper-Key Encryptor)
+# OPKE v3.0.4 (Offline Paper-Key Encryptor)
 
-**OPKE (Offline Paper-Key Encryptor) v3.0.3** is a standalone offline encryption tool designed to safeguard ultra-sensitive secrets—such as VeraCrypt master passwords, password manager emergency recovery kits (1Password, Bitwarden), and root seed keys—by converting them into **cold-storage paper keys (PEM format)** and **high-density QR codes** backed by memory-hard key derivation.
+**OPKE (Offline Paper-Key Encryptor) v3.0.4** is a standalone offline encryption tool designed to safeguard ultra-sensitive secrets—such as VeraCrypt master passwords, password manager emergency recovery kits (1Password, Bitwarden), and root seed keys—by converting them into **cold-storage paper keys (PEM format)** and **high-density QR codes** backed by memory-hard key derivation.
 
 Starting with v3.0, OPKE is completely natively implemented in **Rust (`opke-rs`)** as a zero-dependency standalone binary (`.exe`), featuring compiler-guaranteed memory zeroization (`zeroize`), kernel physical memory locking (`VirtualLock` on Windows / `mlock` on Unix to prevent swapping secrets to `pagefile.sys`), hardware-accelerated AES-NI, and an **interactive guided wizard for seamless double-click execution from Windows Explorer**.
 
-In v3.0.3, comprehensive architectural remediations for audited security findings have been integrated alongside full CI automation, formal verification proofs, and continuous fuzz testing.
+In v3.0.4, comprehensive architectural remediations for audited security findings have been integrated alongside full CI automation, formal verification proofs, and continuous fuzz testing.
 
 ---
 
@@ -14,7 +14,7 @@ In v3.0.3, comprehensive architectural remediations for audited security finding
 
 ```text
 OPKE/
-├── opke-rs/              # OPKE v3.0.3 Rust source code
+├── opke-rs/              # OPKE v3.0.4 Rust source code
 │   ├── src/
 │   │   ├── core/         # Cryptographic engine (Argon2id + ChaCha20-Poly1305 + AES-256-GCM + AAD)
 │   │   ├── envelope/     # Envelope format (v2/v3 support, PEM encoding, Base64 pre-bounds)
@@ -82,7 +82,7 @@ Applies nested AEAD ciphers with complementary mathematical foundations (stream 
 ```
 
 > [!TIP]
-> **Backward Compatibility & Downgrade Defense**: OPKE v3.0.3 can parse legacy v2 envelopes. However, to prevent cryptographic downgrade attacks, decrypting v2 envelopes requires an explicit `--allow-v2` command-line flag.
+> **Backward Compatibility & Downgrade Defense**: OPKE v3.0.4 can parse legacy v2 envelopes. However, to prevent cryptographic downgrade attacks, decrypting v2 envelopes requires an explicit `--allow-v2` command-line flag.
 
 ---
 
@@ -93,7 +93,7 @@ Simply double-click `opke.exe` in Windows Explorer to launch the interactive ter
 
 ```text
 ============================================================
-       OPKE v3.0.3 (Offline Paper-Key Encryptor)             
+       OPKE v3.0.4 (Offline Paper-Key Encryptor)             
        Offline Paper-Key Encryption Utility                 
 ============================================================
  [1] Encrypt Secret (Encrypt -> Paper Key / QR)
