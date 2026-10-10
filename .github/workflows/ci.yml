@@ -137,6 +137,7 @@ jobs:
       - name: Install Nightly Rust
         uses: dtolnay/rust-toolchain@nightly
         with:
+          targets: x86_64-unknown-linux-musl
           components: llvm-tools-preview
 
       - name: Install cargo-fuzz
