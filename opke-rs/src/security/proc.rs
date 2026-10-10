@@ -1,5 +1,6 @@
 //! Process memory and command line scrubbing utilities.
 
+#[cfg(windows)]
 use zeroize::Zeroizing;
 
 #[cfg(windows)]

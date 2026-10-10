@@ -495,6 +495,7 @@ fn write_secure_file_direct(p: &Path, data: &[u8], force: bool) -> Result<(), Op
     write_secure_file_internal(p, data, force, true)
 }
 
+#[cfg(windows)]
 fn write_secure_file_inplace(p: &Path, data: &[u8], force: bool) -> Result<(), OpkeError> {
     write_secure_file_internal(p, data, force, false)
 }
@@ -502,7 +503,7 @@ fn write_secure_file_inplace(p: &Path, data: &[u8], force: bool) -> Result<(), O
 fn write_secure_file_internal(
     p: &Path,
     data: &[u8],
-    force: bool,
+    _force: bool,
     create_new: bool,
 ) -> Result<(), OpkeError> {
     let mut options = OpenOptions::new();
@@ -549,10 +550,13 @@ fn write_secure_file_internal(
             let ret = libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB);
             if ret != 0 {
                 let err = std::io::Error::last_os_error();
-                return Err(OpkeError::Io(format!(
-                    "Failed to acquire exclusive lock on '{}': {}",
-                    p.display(),
-                    err
+                return Err(OpkeError::Io(std::io::Error::new(
+                    err.kind(),
+                    format!(
+                        "Failed to acquire exclusive lock on '{}': {}",
+                        p.display(),
+                        err
+                    ),
                 )));
             }
         }
@@ -562,7 +566,7 @@ fn write_secure_file_internal(
     {
         use std::os::windows::io::AsRawHandle;
         let handle = file.as_raw_handle();
-        apply_windows_dacl(handle as *mut _, p, force)?;
+        apply_windows_dacl(handle as *mut _, p, _force)?;
 
         // VULN-62, VULN-96: Mandatory file locking on Windows with return check
         unsafe {

@@ -6,6 +6,7 @@ use opke::core::{decrypt_cascade, encrypt_cascade, NONCE_LEN, SUBKEY_LEN};
 use opke::envelope::{create_envelope, deserialize_envelope, pem};
 use opke::qr::print_terminal_qr;
 use opke::security::write_secure_file;
+#[cfg(windows)]
 use tempfile::NamedTempFile;
 
 // =========================================================================
