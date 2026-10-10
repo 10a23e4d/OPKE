@@ -151,13 +151,50 @@ jobs:
 
       - name: Build fuzz targets
         run: |
-          cargo +nightly fuzz list
-          cargo +nightly fuzz build --sanitizer none
+          set +e
+          echo "### Cargo Fuzz Diagnostics" >> $GITHUB_STEP_SUMMARY
+          echo "which cargo-fuzz: $(which cargo-fuzz 2>&1)" >> $GITHUB_STEP_SUMMARY
+          echo "cargo-fuzz version: $(cargo-fuzz --version 2>&1)" >> $GITHUB_STEP_SUMMARY
+          echo "cargo version: $(cargo --version 2>&1)" >> $GITHUB_STEP_SUMMARY
+
+          LIST_OUT=$(cargo +nightly fuzz list 2>&1)
+          LIST_ST=$?
+          echo "### cargo fuzz list (Exit $LIST_ST)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$LIST_OUT" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$LIST_OUT"
+          if [ $LIST_ST -ne 0 ]; then exit $LIST_ST; fi
+
+          BUILD_OUT=$(cargo +nightly fuzz build --sanitizer none 2>&1)
+          BUILD_ST=$?
+          echo "### cargo fuzz build (Exit $BUILD_ST)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$BUILD_OUT" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$BUILD_OUT"
+          if [ $BUILD_ST -ne 0 ]; then exit $BUILD_ST; fi
 
       - name: Run libFuzzer smoke test (fuzz_envelope & fuzz_cascade)
         run: |
-          cargo +nightly fuzz run fuzz_envelope --sanitizer none -- -runs=1000 -max_total_time=5 -max_len=4096
-          cargo +nightly fuzz run fuzz_cascade --sanitizer none -- -runs=1000 -max_total_time=5 -max_len=4096
+          set +e
+          OUT1=$(cargo +nightly fuzz run fuzz_envelope --sanitizer none -- -runs=1000 -max_total_time=5 -max_len=4096 2>&1)
+          ST1=$?
+          echo "### fuzz_envelope (Exit $ST1)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$OUT1" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$OUT1"
+
+          OUT2=$(cargo +nightly fuzz run fuzz_cascade --sanitizer none -- -runs=1000 -max_total_time=5 -max_len=4096 2>&1)
+          ST2=$?
+          echo "### fuzz_cascade (Exit $ST2)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$OUT2" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$OUT2"
+
+          if [ $ST1 -ne 0 ] || [ $ST2 -ne 0 ]; then exit 1; fi
 
   kani:
     name: Formal Verification (Kani)
