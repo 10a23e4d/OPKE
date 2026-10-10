@@ -72,9 +72,9 @@ pub fn lock_memory(ptr: *const u8, len: usize) -> bool {
     }
     #[cfg(miri)]
     {
-        return true;
+        true
     }
-    #[cfg(windows)]
+    #[cfg(all(not(miri), windows))]
     unsafe {
         let res = VirtualLock(ptr as *const _, len);
         if res != 0 {
@@ -92,7 +92,7 @@ pub fn lock_memory(ptr: *const u8, len: usize) -> bool {
         }
         false
     }
-    #[cfg(unix)]
+    #[cfg(all(not(miri), unix))]
     unsafe {
         libc::mlock(ptr as *const _, len) == 0
     }
@@ -104,14 +104,12 @@ pub fn unlock_memory(ptr: *const u8, len: usize) {
         return;
     }
     #[cfg(miri)]
-    {
-        return;
-    }
-    #[cfg(windows)]
+    {}
+    #[cfg(all(not(miri), windows))]
     unsafe {
         let _ = VirtualUnlock(ptr as *const _, len);
     }
-    #[cfg(unix)]
+    #[cfg(all(not(miri), unix))]
     unsafe {
         let _ = libc::munlock(ptr as *const _, len);
     }
