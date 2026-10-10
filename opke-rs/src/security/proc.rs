@@ -1,5 +1,7 @@
 //! Process memory and command line scrubbing utilities.
 
+use zeroize::Zeroizing;
+
 #[cfg(windows)]
 extern "system" {
     fn GetCommandLineW() -> *mut u16;
@@ -35,7 +37,7 @@ pub fn scrub_cmdline_targets(targets: &[&str]) {
                                 while pos + needle.len() <= slice.len() {
                                     if &slice[pos..pos + needle.len()] == needle {
                                         for b in &mut slice[pos..pos + needle.len()] {
-                                            *b = b'X';
+                                            *b = 0;
                                         }
                                         pos += needle.len();
                                     } else {
@@ -70,12 +72,12 @@ pub fn scrub_cmdline_targets(targets: &[&str]) {
                     if t.is_empty() {
                         continue;
                     }
-                    let needle: Vec<u16> = t.encode_utf16().collect();
+                    let needle: Zeroizing<Vec<u16>> = Zeroizing::new(t.encode_utf16().collect());
                     let mut pos = 0;
                     while pos + needle.len() <= slice.len() {
                         if &slice[pos..pos + needle.len()] == needle.as_slice() {
                             for ch in &mut slice[pos..pos + needle.len()] {
-                                *ch = 'X' as u16;
+                                *ch = 0;
                             }
                             pos += needle.len();
                         } else {

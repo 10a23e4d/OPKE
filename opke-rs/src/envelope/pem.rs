@@ -14,6 +14,12 @@ pub fn to_paper_format(b64_payload: &str, line_length: usize) -> Result<String, 
         )));
     }
 
+    if !b64_payload.is_ascii() {
+        return Err(OpkeError::Validation(
+            "Base64 payload contains non-ASCII characters.".into(),
+        ));
+    }
+
     let num_lines = if b64_payload.is_empty() {
         0
     } else {
@@ -38,7 +44,7 @@ pub fn to_paper_format(b64_payload: &str, line_length: usize) -> Result<String, 
     Ok(output)
 }
 
-/// Strips PEM header/footer if present, strictly verifying boundary integrity.
+/// Strips PEM header/footer if present, extracting encapsulated content per RFC 7468.
 pub fn strip_pem(raw_input: &str) -> Result<String, OpkeError> {
     let text = raw_input.trim();
     let has_header = text.contains(PEM_HEADER);
@@ -55,12 +61,16 @@ pub fn strip_pem(raw_input: &str) -> Result<String, OpkeError> {
                 "Multiple PEM envelope markers detected; ambiguous input.".into(),
             ));
         }
-        if !text.starts_with(PEM_HEADER) || !text.ends_with(PEM_FOOTER) {
+        let header_idx = text.find(PEM_HEADER).unwrap();
+        let footer_idx = text.find(PEM_FOOTER).unwrap();
+        if footer_idx < header_idx {
             return Err(OpkeError::Envelope(
-                "Malformed PEM envelope: unexpected data outside encapsulation boundary.".into(),
+                "Malformed PEM envelope: footer appears before header.".into(),
             ));
         }
-        let stripped = &text[PEM_HEADER.len()..text.len() - PEM_FOOTER.len()];
+        // RFC 7468: Explanatory text outside the encapsulation boundaries is ignored.
+        let content_start = header_idx + PEM_HEADER.len();
+        let stripped = &text[content_start..footer_idx];
         return Ok(stripped.trim().to_string());
     }
 

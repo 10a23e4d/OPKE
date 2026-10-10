@@ -8,29 +8,40 @@ use crate::security::read_secure_file;
 
 use super::args::InspectArgs;
 
+fn read_stdin_envelope() -> Result<String, OpkeError> {
+    if io::stdin().is_terminal() {
+        eprintln!("[*] Paste your OPKE envelope (or PEM block), then press Ctrl+Z (Windows) or Ctrl+D (Unix) then Enter:");
+    }
+    let mut take = io::stdin().take((MAX_ENVELOPE_CHARS + 1) as u64);
+    let mut buf = String::new();
+    take.read_to_string(&mut buf)?;
+    if buf.len() > MAX_ENVELOPE_CHARS {
+        return Err(OpkeError::Validation(format!(
+            "Envelope input exceeds maximum allowed size ({} chars).",
+            MAX_ENVELOPE_CHARS
+        )));
+    }
+    Ok(buf)
+}
+
 pub fn execute(args: InspectArgs) -> Result<(), OpkeError> {
-    let raw_input: String = if let Some(inp) = args.input {
-        inp
-    } else if let Some(path) = args.input_file {
-        let bytes = read_secure_file(path, MAX_ENVELOPE_CHARS)?;
-        String::from_utf8(bytes.to_vec()).map_err(|e| {
-            OpkeError::Validation(format!("Envelope file is not valid UTF-8: {}", e))
-        })?
+    let raw_input: String = if let Some(ref inp) = args.input {
+        if inp == "-" {
+            read_stdin_envelope()?
+        } else {
+            inp.clone()
+        }
+    } else if let Some(ref path) = args.input_file {
+        if path == "-" {
+            read_stdin_envelope()?
+        } else {
+            let bytes = read_secure_file(path, MAX_ENVELOPE_CHARS)?;
+            String::from_utf8(bytes.to_vec()).map_err(|e| {
+                OpkeError::Validation(format!("Envelope file is not valid UTF-8: {}", e))
+            })?
+        }
     } else {
-        if io::stdin().is_terminal() {
-            eprintln!("[*] Paste your OPKE envelope (or PEM block), then press Ctrl+Z (Windows) or Ctrl+D (Unix) then Enter:");
-        }
-        let mut buf = String::new();
-        io::stdin()
-            .take((MAX_ENVELOPE_CHARS + 1) as u64)
-            .read_to_string(&mut buf)?;
-        if buf.len() > MAX_ENVELOPE_CHARS {
-            return Err(OpkeError::Validation(format!(
-                "Envelope input exceeds maximum allowed size ({} chars).",
-                MAX_ENVELOPE_CHARS
-            )));
-        }
-        buf
+        read_stdin_envelope()?
     };
 
     if raw_input.trim().is_empty() {

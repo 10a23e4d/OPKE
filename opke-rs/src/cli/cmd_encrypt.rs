@@ -4,7 +4,7 @@ use base64::prelude::*;
 use rand::{rngs::OsRng, RngCore};
 use std::io::{self, IsTerminal, Read, Write};
 use std::time::Instant;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::core::{
     derive_key_and_split, encrypt_cascade, get_profile, MAX_M_KIB, MAX_P, MAX_SECRET_BYTES, MAX_T,
@@ -15,21 +15,23 @@ use crate::error::OpkeError;
 use crate::qr::{generate_qr_image_with_options, print_terminal_qr_stderr};
 use crate::security::{
     get_available_memory_kib, prompt_passphrase, prompt_secret, read_secure_file,
-    scrub_cmdline_targets, scrub_env_passphrase, write_secure_file_with_options,
+    scrub_cmdline_targets, scrub_env_passphrase, write_secure_file_with_options, MemoryLockGuard,
 };
 
 use super::args::EncryptArgs;
 
 pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
-    // 0. Prohibit passing plaintext secrets or passphrases via CLI args (VULN-13)
-    if let Some(ref sec) = args.secret {
-        scrub_cmdline_targets(&[sec]);
+    // 0. Prohibit passing plaintext secrets or passphrases via CLI args (VULN-13, VULN-103)
+    if let Some(mut sec) = args.secret {
+        scrub_cmdline_targets(&[&sec]);
+        sec.zeroize();
         return Err(OpkeError::Validation(
             "Passing secrets as command-line arguments is strictly prohibited for security.\nPlease use interactive prompt, stdin pipe, or provide a file via '-i / --input-file'.".into(),
         ));
     }
-    if let Some(ref pass) = args.passphrase {
-        scrub_cmdline_targets(&[pass]);
+    if let Some(mut pass) = args.passphrase {
+        scrub_cmdline_targets(&[&pass]);
+        pass.zeroize();
         return Err(OpkeError::Validation(
             "Passing passphrases as command-line arguments is strictly prohibited for security.\nPlease use interactive prompt or set the 'OPKE_PASSPHRASE' environment variable.".into(),
         ));
@@ -39,9 +41,11 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
     let profile = match get_profile(&args.profile) {
         Some(p) => p,
         None => {
+            // Sanitize profile argument to prevent ANSI injection (VULN-121)
+            let sanitized: String = args.profile.chars().filter(|c| !c.is_control()).collect();
             return Err(OpkeError::Validation(format!(
                 "Unknown profile: '{}'. Choose from 'production', 'moderate', or 'fast'.",
-                args.profile
+                sanitized
             )));
         }
     };
@@ -76,12 +80,13 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         )));
     }
 
-    // Check system RAM availability to prevent OOM freezes
+    // Check system RAM availability to prevent OOM freezes (with 10% safety margin, VULN-110)
     if let Some(avail_kib) = get_available_memory_kib() {
-        if (m_kib as u64) > avail_kib && !args.force {
+        let required_kib = (m_kib as u64).saturating_add((m_kib as u64) / 10);
+        if required_kib > avail_kib && !args.force {
             return Err(OpkeError::ResourceLimit(format!(
-                "Selected parameters require {} KiB ({:.2} GiB) RAM, but only ~{} KiB ({:.2} GiB) is available.\nEncryption aborted to prevent system freeze / OOM. Use '--profile moderate' or '--force' to override.",
-                m_kib, (m_kib as f64) / 1024.0 / 1024.0,
+                "Selected parameters require ~{} KiB ({:.2} GiB) RAM (including runtime overhead), but only ~{} KiB ({:.2} GiB) is available.\nEncryption aborted to prevent system freeze / OOM. Use '--profile moderate' or '--force' to override.",
+                required_kib, (required_kib as f64) / 1024.0 / 1024.0,
                 avail_kib, (avail_kib as f64) / 1024.0 / 1024.0
             )));
         }
@@ -92,16 +97,33 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         read_secure_file(path, MAX_SECRET_BYTES)?
     } else if !io::stdin().is_terminal() {
         let mut take = io::stdin().take((MAX_SECRET_BYTES + 1) as u64);
-        let mut buf = Zeroizing::new(Vec::with_capacity(65536));
-        take.read_to_end(&mut buf)?;
-        if buf.is_empty() {
+        // VULN-80: Read in fixed 8KB chunks to eliminate heap reallocations that leak unzeroized plaintext
+        let mut chunks: Vec<Zeroizing<[u8; 8192]>> = Vec::new();
+        let mut total_len = 0usize;
+        loop {
+            let mut chunk = Zeroizing::new([0u8; 8192]);
+            let n = take.read(&mut *chunk)?;
+            if n == 0 {
+                break;
+            }
+            total_len += n;
+            chunks.push(chunk);
+            if total_len > MAX_SECRET_BYTES {
+                return Err(OpkeError::Validation(format!(
+                    "Secret input exceeds maximum allowed size ({} bytes).",
+                    MAX_SECRET_BYTES
+                )));
+            }
+        }
+        if total_len == 0 {
             return Err(OpkeError::Validation("Secret input is empty.".into()));
         }
-        if buf.len() > MAX_SECRET_BYTES {
-            return Err(OpkeError::Validation(format!(
-                "Secret input exceeds maximum allowed size ({} bytes).",
-                MAX_SECRET_BYTES
-            )));
+        let mut buf = Zeroizing::new(Vec::with_capacity(total_len));
+        let mut remaining = total_len;
+        for c in chunks {
+            let to_copy = remaining.min(8192);
+            buf.extend_from_slice(&c[..to_copy]);
+            remaining -= to_copy;
         }
         buf
     } else {
@@ -111,6 +133,9 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
     if secret_bytes.is_empty() {
         return Err(OpkeError::Validation("Secret cannot be empty.".into()));
     }
+
+    // VULN-85: Lock plaintext secret into physical RAM to prevent paging to disk during heavy Argon2id
+    let _lock_secret = MemoryLockGuard::try_lock(&secret_bytes);
 
     // 3. Resolve passphrase
     let passphrase: Zeroizing<String> = if let Some(env_pass) = scrub_env_passphrase()? {
@@ -132,6 +157,10 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
     OsRng.fill_bytes(&mut salt);
 
     let (key_chacha, key_aes) = derive_key_and_split(passphrase.as_bytes(), &salt, m_kib, t, p)?;
+
+    // VULN-76: Lock derived subkeys at caller stack frame in physical RAM
+    let _lock_chacha = MemoryLockGuard::try_lock(&*key_chacha);
+    let _lock_aes = MemoryLockGuard::try_lock(&*key_aes);
 
     // Immediately drop passphrase after key derivation (VULN-36, VULN-68)
     drop(passphrase);
@@ -178,7 +207,9 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         aad.as_deref(),
     )?;
 
-    // Immediately drop subkeys after cascade encryption (VULN-69)
+    // Immediately drop lock guards and subkeys after cascade encryption (VULN-69)
+    drop(_lock_chacha);
+    drop(_lock_aes);
     drop(key_chacha);
     drop(key_aes);
 
@@ -249,8 +280,31 @@ pub fn execute(args: EncryptArgs) -> Result<(), OpkeError> {
         }
     }
 
-    // 7. QR Code generation if requested (propagating force, VULN-32)
+    // 7. QR Code generation if requested (propagating force, VULN-32, VULN-75)
     if let Some(ref qr_path) = args.qr {
+        let p_qr = std::path::Path::new(qr_path);
+        if p_qr.exists() && !args.force {
+            if io::stdin().is_terminal() {
+                eprintln!(
+                    "[!] 警告: QRコード保存先ファイル '{}' は既に存在します。",
+                    p_qr.display()
+                );
+                eprint!("上書きしますか？ (y/N): ");
+                let _ = io::stderr().flush();
+                let mut ans = String::new();
+                let _ = io::stdin().read_line(&mut ans);
+                if !ans.trim().eq_ignore_ascii_case("y") {
+                    return Err(OpkeError::Validation(
+                        "既存QRコードファイルの上書きがキャンセルされました。上書きを強制するには '--force' を指定してください。".into(),
+                    ));
+                }
+            } else {
+                return Err(OpkeError::Validation(format!(
+                    "QRコード保存先ファイル '{}' は既に存在します。上書きするには '--force' を指定してください。",
+                    p_qr.display()
+                )));
+            }
+        }
         generate_qr_image_with_options(&raw_b64, qr_path, args.force)?;
         eprintln!("[+] QR Code image saved to: {}", qr_path);
     }

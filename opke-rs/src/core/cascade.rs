@@ -3,7 +3,7 @@
 //! Layer 2: AES-256-GCM
 
 use aes_gcm::{
-    aead::{Aead, KeyInit, Payload},
+    aead::{Aead, AeadInPlace, KeyInit, Payload, Tag},
     Aes256Gcm, Key as AesKey, Nonce as AesNonce,
 };
 use chacha20poly1305::{ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce};
@@ -170,53 +170,58 @@ pub fn decrypt_cascade(
 
     let aad_bytes = aad.unwrap_or(b"");
 
-    // Layer 2: AES-256-GCM Decryption
+    // Preallocate zeroized working buffer for in-place cascade decryption (VULN-101)
+    let mut buf = Zeroizing::new(Vec::with_capacity(final_ciphertext.len()));
+    buf.extend_from_slice(final_ciphertext);
+
+    // Layer 2: AES-256-GCM Decryption (in-place)
     let aes_key = AesKey::<Aes256Gcm>::from_slice(key_aes);
     let aes_cipher = Aes256Gcm::new(aes_key);
     let aes_nonce = AesNonce::from_slice(nonce_aes);
-
-    let mut l2_payload = Vec::with_capacity(final_ciphertext.len() + TAG_LEN);
-    l2_payload.extend_from_slice(final_ciphertext);
-    l2_payload.extend_from_slice(tag_aes);
+    let aes_tag = Tag::<Aes256Gcm>::from_slice(tag_aes);
 
     // Uniform authentication failure message to eliminate multi-layer oracle (VULN-42)
-    let l1_blob = Zeroizing::new(
-        aes_cipher
-            .decrypt(aes_nonce, Payload { msg: l2_payload.as_slice(), aad: aad_bytes })
-            .map_err(|_| {
-                OpkeError::Authentication(
-                    "Decryption failed: authentication failed. Invalid passphrase or corrupted data.".into(),
-                )
-            })?,
-    );
+    aes_cipher
+        .decrypt_in_place_detached(aes_nonce, aad_bytes, &mut buf, aes_tag)
+        .map_err(|_| {
+            OpkeError::Authentication(
+                "Decryption failed: authentication failed. Invalid passphrase or corrupted data."
+                    .into(),
+            )
+        })?;
 
-    if l1_blob.len() < MIN_CIPHERTEXT_BYTES {
+    if buf.len() < MIN_CIPHERTEXT_BYTES {
         return Err(OpkeError::Authentication(
             "Decryption failed: authentication failed. Invalid passphrase or corrupted data."
                 .into(),
         ));
     }
 
-    // Layer 1: ChaCha20-Poly1305 Decryption
+    // Layer 1: ChaCha20-Poly1305 Decryption (in-place)
+    let ct_len = buf.len() - TAG_LEN;
+    let mut chacha_tag_bytes = [0u8; TAG_LEN];
+    chacha_tag_bytes.copy_from_slice(&buf[ct_len..]);
+    buf.truncate(ct_len);
+
     let chacha_key = ChaChaKey::from_slice(key_chacha);
     let chacha_cipher = ChaCha20Poly1305::new(chacha_key);
     let chacha_nonce = ChaChaNonce::from_slice(nonce_chacha);
+    let chacha_tag = Tag::<ChaCha20Poly1305>::from_slice(&chacha_tag_bytes);
 
-    let plaintext = Zeroizing::new(
-        chacha_cipher
-            .decrypt(chacha_nonce, Payload { msg: l1_blob.as_slice(), aad: aad_bytes })
-            .map_err(|_| {
-                OpkeError::Authentication(
-                    "Decryption failed: authentication failed. Invalid passphrase or corrupted data.".into(),
-                )
-            })?,
-    );
+    chacha_cipher
+        .decrypt_in_place_detached(chacha_nonce, aad_bytes, &mut buf, chacha_tag)
+        .map_err(|_| {
+            OpkeError::Authentication(
+                "Decryption failed: authentication failed. Invalid passphrase or corrupted data."
+                    .into(),
+            )
+        })?;
 
-    if plaintext.is_empty() {
+    if buf.is_empty() {
         return Err(OpkeError::Authentication(
             "Decryption failed: Plaintext is empty.".into(),
         ));
     }
 
-    Ok(plaintext)
+    Ok(buf)
 }

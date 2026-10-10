@@ -17,10 +17,12 @@ extern "system" {
 #[cfg(windows)]
 const STD_INPUT_HANDLE: u32 = -10i32 as u32;
 
-/// RAII Guard ensuring terminal echo is restored even if interrupted or panicked (VULN-58).
+/// RAII Guard ensuring terminal echo is restored even if interrupted or panicked (VULN-58, VULN-79).
 struct TerminalEchoGuard {
     #[cfg(windows)]
     orig: Option<(*mut std::ffi::c_void, u32)>,
+    #[cfg(unix)]
+    orig: Option<libc::termios>,
 }
 
 impl TerminalEchoGuard {
@@ -40,7 +42,19 @@ impl TerminalEchoGuard {
             }
             Self { orig: None }
         }
-        #[cfg(not(windows))]
+        #[cfg(unix)]
+        {
+            unsafe {
+                let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
+                if libc::tcgetattr(libc::STDIN_FILENO, termios.as_mut_ptr()) == 0 {
+                    return Self {
+                        orig: Some(termios.assume_init()),
+                    };
+                }
+            }
+            Self { orig: None }
+        }
+        #[cfg(not(any(windows, unix)))]
         {
             Self {}
         }
@@ -54,6 +68,14 @@ impl Drop for TerminalEchoGuard {
             if let Some((h, mode)) = self.orig {
                 unsafe {
                     SetConsoleMode(h, mode);
+                }
+            }
+        }
+        #[cfg(unix)]
+        {
+            if let Some(ref termios) = self.orig {
+                unsafe {
+                    libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, termios);
                 }
             }
         }
@@ -102,24 +124,34 @@ pub fn prompt_secret(multiline: bool, max_bytes: usize) -> Result<Zeroizing<Vec<
         eprintln!(
             "[*] Multi-line secret entry:\n[*] Paste/type secret, then press Ctrl+Z (Windows) or Ctrl+D (Unix) then Enter:"
         );
-        let mut buf = Zeroizing::new(Vec::with_capacity(8192.min(max_bytes)));
+        // VULN-80: Collect fixed 8KB chunks to eliminate heap reallocations that leak unzeroized plaintext
+        let mut chunks: Vec<Zeroizing<[u8; 8192]>> = Vec::new();
+        let mut total_len = 0usize;
         let mut stdin = io::stdin().lock();
-        let mut chunk = Zeroizing::new([0u8; 8192]);
         loop {
+            let mut chunk = Zeroizing::new([0u8; 8192]);
             let n = stdin.read(&mut *chunk)?;
             if n == 0 {
                 break;
             }
-            buf.extend_from_slice(&chunk[..n]);
-            if buf.len() > max_bytes {
+            total_len += n;
+            chunks.push(chunk);
+            if total_len > max_bytes {
                 return Err(OpkeError::Validation(format!(
                     "Secret input exceeds maximum allowed size ({} bytes).",
                     max_bytes
                 )));
             }
         }
-        if buf.is_empty() {
+        if total_len == 0 {
             return Err(OpkeError::Validation("Secret cannot be empty.".into()));
+        }
+        let mut buf = Zeroizing::new(Vec::with_capacity(total_len));
+        let mut remaining = total_len;
+        for c in chunks {
+            let to_copy = remaining.min(8192);
+            buf.extend_from_slice(&c[..to_copy]);
+            remaining -= to_copy;
         }
         Ok(buf)
     } else {

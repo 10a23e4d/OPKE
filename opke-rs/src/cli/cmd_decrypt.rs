@@ -2,14 +2,14 @@
 
 use std::io::{self, IsTerminal, Read, Write};
 use std::time::Instant;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::core::{decrypt_cascade, derive_key_and_split, MIN_M_KIB, MIN_P, MIN_T};
 use crate::envelope::{deserialize_envelope, MAX_ENVELOPE_CHARS};
 use crate::error::OpkeError;
 use crate::security::{
     get_available_memory_kib, prompt_passphrase, read_secure_file, scrub_cmdline_targets,
-    scrub_env_passphrase, write_secure_file_with_options,
+    scrub_env_passphrase, write_secure_file_with_options, MemoryLockGuard,
 };
 
 use super::args::DecryptArgs;
@@ -51,9 +51,10 @@ fn output_plaintext_to_stdout(plaintext: &[u8]) -> Result<(), OpkeError> {
 }
 
 pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
-    // 0. Prohibit passing passphrases via CLI args (VULN-13)
-    if let Some(ref pass) = args.passphrase {
-        scrub_cmdline_targets(&[pass]);
+    // 0. Prohibit passing passphrases via CLI args (VULN-13, VULN-103)
+    if let Some(mut pass) = args.passphrase {
+        scrub_cmdline_targets(&[&pass]);
+        pass.zeroize();
         return Err(OpkeError::Validation(
             "Passing passphrases as command-line arguments is strictly prohibited for security.\nPlease use interactive prompt or set the 'OPKE_PASSPHRASE' environment variable.".into(),
         ));
@@ -184,6 +185,10 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
     let (key_chacha, key_aes) =
         derive_key_and_split(passphrase.as_bytes(), &decoded.salt, m_kib, t, p)?;
 
+    // VULN-76: Lock subkeys at caller stack frame in physical RAM
+    let _lock_chacha = MemoryLockGuard::try_lock(&*key_chacha);
+    let _lock_aes = MemoryLockGuard::try_lock(&*key_aes);
+
     // VULN-68: Immediately drop passphrase
     drop(passphrase);
 
@@ -211,7 +216,12 @@ pub fn execute(args: DecryptArgs) -> Result<(), OpkeError> {
         aad_ref,
     )?;
 
-    // VULN-69: Immediately drop subkeys
+    // VULN-85: Lock decrypted plaintext into physical RAM
+    let _lock_plain = MemoryLockGuard::try_lock(&plaintext);
+
+    // VULN-69: Immediately drop lock guards and subkeys
+    drop(_lock_chacha);
+    drop(_lock_aes);
     drop(key_chacha);
     drop(key_aes);
 

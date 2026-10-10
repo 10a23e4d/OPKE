@@ -156,6 +156,12 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                 let qr_term_ans =
                     prompt_line("ターミナル画面上にもQRコードを表示しますか？ (Y/n): ")?;
                 let qr_term = !qr_term_ans.eq_ignore_ascii_case("n");
+                let force = output
+                    .as_ref()
+                    .is_some_and(|p| std::path::Path::new(p).exists())
+                    || qr
+                        .as_ref()
+                        .is_some_and(|p| std::path::Path::new(p).exists());
 
                 let args = EncryptArgs {
                     secret: None,
@@ -171,7 +177,7 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                     raw: false,
                     multiline: false,
                     v2: false,
-                    force: false,
+                    force,
                 };
 
                 if let Err(e) = cmd_encrypt::execute(args) {
@@ -208,6 +214,10 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                     }
                 }
 
+                let force = output
+                    .as_ref()
+                    .is_some_and(|p| std::path::Path::new(p).exists());
+
                 let args = DecryptArgs {
                     input: None,
                     input_file,
@@ -217,7 +227,7 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                     max_time: None,
                     max_threads: None,
                     allow_v2: false,
-                    force: false,
+                    force,
                 };
 
                 if let Err(e) = cmd_decrypt::execute(args) {

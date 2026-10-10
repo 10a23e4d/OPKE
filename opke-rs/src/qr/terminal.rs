@@ -37,7 +37,7 @@ pub fn print_terminal_qr<W: Write>(data: &str, mut out: W) -> Result<(), OpkeErr
     };
 
     let width = code.width();
-    let quiet_zone = 2;
+    let quiet_zone = 4; // ISO/IEC 18004 4-module quiet zone (VULN-94)
     let total_width = width + 2 * quiet_zone;
     let total_height = width + 2 * quiet_zone;
 
@@ -81,7 +81,30 @@ pub fn print_terminal_qr<W: Write>(data: &str, mut out: W) -> Result<(), OpkeErr
     Ok(())
 }
 
+#[cfg(windows)]
+fn enable_windows_vt_mode() {
+    const STD_ERROR_HANDLE: u32 = 0xFFFFFFF4; // -12i32 as u32
+    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+    extern "system" {
+        fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
+        fn GetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, lpMode: *mut u32) -> i32;
+        fn SetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, dwMode: u32) -> i32;
+    }
+    unsafe {
+        let handle = GetStdHandle(STD_ERROR_HANDLE);
+        if !handle.is_null() && handle as isize != -1 {
+            let mut mode = 0u32;
+            if GetConsoleMode(handle, &mut mode) != 0 {
+                let _ = SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+            }
+        }
+    }
+}
+
 /// Convenience function to render QR code to stderr.
 pub fn print_terminal_qr_stderr(data: &str) -> Result<(), OpkeError> {
+    #[cfg(windows)]
+    enable_windows_vt_mode();
+
     print_terminal_qr(data, io::stderr())
 }

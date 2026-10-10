@@ -222,13 +222,16 @@ pub fn get_available_memory_kib() -> Option<u64> {
             let flags = info.basic_limit_information.limit_flags;
             let mut job_lim = 0usize;
             if (flags & 0x00000100) != 0 && info.process_memory_limit > 0 {
-                job_lim = info.process_memory_limit;
+                job_lim = info
+                    .process_memory_limit
+                    .saturating_sub(info.peak_process_memory_used);
             }
-            if (flags & 0x00000200) != 0
-                && info.job_memory_limit > 0
-                && (job_lim == 0 || info.job_memory_limit < job_lim)
-            {
-                job_lim = info.job_memory_limit;
+            if (flags & 0x00000200) != 0 && info.job_memory_limit > 0 {
+                let job_used = info.peak_job_memory_used.max(info.peak_process_memory_used);
+                let avail = info.job_memory_limit.saturating_sub(job_used);
+                if job_lim == 0 || avail < job_lim {
+                    job_lim = avail;
+                }
             }
             if job_lim > 0 {
                 cgroup_kib = Some((job_lim / 1024) as u64);

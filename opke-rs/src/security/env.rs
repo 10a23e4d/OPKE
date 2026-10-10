@@ -9,6 +9,7 @@ use crate::error::OpkeError;
 extern "system" {
     fn GetEnvironmentStringsW() -> *mut u16;
     fn FreeEnvironmentStringsW(penv: *mut u16) -> i32;
+    fn SetEnvironmentVariableW(lpName: *const u16, lpValue: *const u16) -> i32;
 }
 
 /// Retrieves and immediately scrubs `OPKE_PASSPHRASE` from environment, libc, and procfs/PEB memory.
@@ -38,8 +39,10 @@ pub fn scrub_env_passphrase() -> Result<Option<Zeroizing<String>>, OpkeError> {
                                     std::slice::from_raw_parts_mut(env_start as *mut u8, len)
                                 };
                                 let targets = [
-                                    format!("OPKE_PASSPHRASE={}", *val).into_bytes(),
-                                    val.as_bytes().to_vec(),
+                                    Zeroizing::new(
+                                        format!("OPKE_PASSPHRASE={}", *val).into_bytes(),
+                                    ),
+                                    Zeroizing::new(val.as_bytes().to_vec()),
                                 ];
                                 for needle in &targets {
                                     if needle.is_empty() {
@@ -49,7 +52,7 @@ pub fn scrub_env_passphrase() -> Result<Option<Zeroizing<String>>, OpkeError> {
                                     while pos + needle.len() <= slice.len() {
                                         if &slice[pos..pos + needle.len()] == needle.as_slice() {
                                             for b in &mut slice[pos..pos + needle.len()] {
-                                                *b = b'X';
+                                                *b = 0;
                                             }
                                             pos += needle.len();
                                         } else {
@@ -66,8 +69,30 @@ pub fn scrub_env_passphrase() -> Result<Option<Zeroizing<String>>, OpkeError> {
 
         #[cfg(windows)]
         {
-            // VULN-35: Wipe OPKE_PASSPHRASE from Windows PEB Environment block
+            // VULN-35, VULN-77: Wipe OPKE_PASSPHRASE from live Windows process environment block (PEB)
             unsafe {
+                let var_name: [u16; 16] = [
+                    b'O' as u16,
+                    b'P' as u16,
+                    b'K' as u16,
+                    b'E' as u16,
+                    b'_' as u16,
+                    b'P' as u16,
+                    b'A' as u16,
+                    b'S' as u16,
+                    b'S' as u16,
+                    b'P' as u16,
+                    b'H' as u16,
+                    b'R' as u16,
+                    b'A' as u16,
+                    b'S' as u16,
+                    b'E' as u16,
+                    0,
+                ];
+                // SetEnvironmentVariableW with NULL deletes variable from process live PEB environment
+                SetEnvironmentVariableW(var_name.as_ptr(), std::ptr::null());
+
+                // Scrub any snapshot environment block from GetEnvironmentStringsW
                 let env_ptr = GetEnvironmentStringsW();
                 if !env_ptr.is_null() {
                     let mut curr = env_ptr;
@@ -77,17 +102,21 @@ pub fn scrub_env_passphrase() -> Result<Option<Zeroizing<String>>, OpkeError> {
                             len += 1;
                         }
                         let slice = std::slice::from_raw_parts_mut(curr, len);
-                        let targets = [format!("OPKE_PASSPHRASE={}", *val), (*val).clone()];
+                        let targets = [
+                            Zeroizing::new(format!("OPKE_PASSPHRASE={}", *val)),
+                            Zeroizing::new((*val).clone()),
+                        ];
                         for target in &targets {
                             if target.is_empty() {
                                 continue;
                             }
-                            let needle: Vec<u16> = target.encode_utf16().collect();
+                            let needle: Zeroizing<Vec<u16>> =
+                                Zeroizing::new(target.encode_utf16().collect());
                             let mut pos = 0;
                             while pos + needle.len() <= slice.len() {
                                 if &slice[pos..pos + needle.len()] == needle.as_slice() {
                                     for ch in &mut slice[pos..pos + needle.len()] {
-                                        *ch = 'X' as u16;
+                                        *ch = 0;
                                     }
                                     pos += needle.len();
                                 } else {

@@ -280,25 +280,81 @@ pub fn create_envelope(
     })
 }
 
-/// Validates that a JSON string does not contain duplicate keys in any object (RFC 8259 compliance / VULN-33).
+/// Validates that a JSON string does not contain duplicate keys in any object (RFC 8259 compliance / VULN-33, VULN-78).
 fn validate_no_duplicate_json_keys(json: &str) -> Result<(), OpkeError> {
     use std::collections::HashSet;
     let mut in_string = false;
-    let mut escape = false;
     let mut current_key = String::new();
     let mut collecting_key = false;
     let mut expecting_colon = false;
     let mut object_stack: Vec<HashSet<String>> = Vec::new();
+    let mut chars = json.chars().peekable();
 
-    for c in json.chars() {
+    while let Some(c) = chars.next() {
         if in_string {
-            if escape {
-                escape = false;
-                if collecting_key {
-                    current_key.push(c);
+            if c == '\\' {
+                if let Some(esc) = chars.next() {
+                    let decoded_char = match esc {
+                        '"' => Some('"'),
+                        '\\' => Some('\\'),
+                        '/' => Some('/'),
+                        'b' => Some('\x08'),
+                        'f' => Some('\x0C'),
+                        'n' => Some('\n'),
+                        'r' => Some('\r'),
+                        't' => Some('\t'),
+                        'u' => {
+                            let mut hex = String::with_capacity(4);
+                            for _ in 0..4 {
+                                if let Some(h) = chars.next() {
+                                    hex.push(h);
+                                }
+                            }
+                            if let Ok(val) = u32::from_str_radix(&hex, 16) {
+                                if (0xD800..=0xDBFF).contains(&val) {
+                                    if chars.peek() == Some(&'\\') {
+                                        chars.next();
+                                        if chars.peek() == Some(&'u') {
+                                            chars.next();
+                                            let mut low_hex = String::with_capacity(4);
+                                            for _ in 0..4 {
+                                                if let Some(h) = chars.next() {
+                                                    low_hex.push(h);
+                                                }
+                                            }
+                                            if let Ok(low_val) = u32::from_str_radix(&low_hex, 16) {
+                                                if (0xDC00..=0xDFFF).contains(&low_val) {
+                                                    let codepoint = 0x10000
+                                                        + ((val - 0xD800) << 10)
+                                                        + (low_val - 0xDC00);
+                                                    char::from_u32(codepoint)
+                                                } else {
+                                                    char::from_u32(val)
+                                                }
+                                            } else {
+                                                char::from_u32(val)
+                                            }
+                                        } else {
+                                            char::from_u32(val)
+                                        }
+                                    } else {
+                                        char::from_u32(val)
+                                    }
+                                } else {
+                                    char::from_u32(val)
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                        other => Some(other),
+                    };
+                    if collecting_key {
+                        if let Some(ch) = decoded_char {
+                            current_key.push(ch);
+                        }
+                    }
                 }
-            } else if c == '\\' {
-                escape = true;
             } else if c == '"' {
                 in_string = false;
                 if collecting_key {
@@ -379,15 +435,22 @@ pub fn deserialize_envelope(raw_input: &str) -> Result<OPKEEnvelope, OpkeError> 
 
     // 1. Strip PEM header/footer if present
     let unpemed = pem::strip_pem(text)?;
-    let cleaned: String = unpemed.chars().filter(|c| !c.is_whitespace()).collect();
-    if cleaned.is_empty() {
+    let trimmed_payload = unpemed.trim();
+    if trimmed_payload.is_empty() {
         return Err(OpkeError::Envelope("Envelope payload is empty.".into()));
     }
 
-    // 2. Determine if payload is JSON or Base64-encoded JSON
-    let json_str = if cleaned.starts_with('{') && cleaned.ends_with('}') {
-        cleaned
+    // 2. Determine if payload is JSON or Base64-encoded JSON (VULN-95: preserve raw JSON whitespace)
+    let json_str = if trimmed_payload.starts_with('{') && trimmed_payload.ends_with('}') {
+        trimmed_payload.to_string()
     } else {
+        let cleaned: String = trimmed_payload
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        if cleaned.is_empty() {
+            return Err(OpkeError::Envelope("Envelope payload is empty.".into()));
+        }
         let decoded = BASE64_STANDARD.decode(&cleaned).map_err(|e| {
             OpkeError::Envelope(format!("Failed to decode Base64 envelope payload: {}", e))
         })?;

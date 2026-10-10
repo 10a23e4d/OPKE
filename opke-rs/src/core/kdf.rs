@@ -4,7 +4,7 @@ use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroizing;
 
 use crate::error::OpkeError;
-use crate::security::memory::lock_memory;
+use crate::security::memory::MemoryLockGuard;
 
 pub const SALT_LEN: usize = 16;
 pub const KEY_LEN: usize = 64;
@@ -72,14 +72,17 @@ pub fn derive_key_and_split(
         )));
     }
 
-    // Unicode NFC Normalization (VULN-55)
+    // Unicode NFC Normalization (VULN-55, VULN-84)
     let norm_pass: Zeroizing<Vec<u8>> = if let Ok(s) = std::str::from_utf8(passphrase) {
-        let nfc_string: String = s.nfc().collect();
-        Zeroizing::new(nfc_string.into_bytes())
+        let mut nfc_buf = Zeroizing::new(String::with_capacity(s.len().saturating_mul(2)));
+        for ch in s.nfc() {
+            nfc_buf.push(ch);
+        }
+        Zeroizing::new(nfc_buf.as_bytes().to_vec())
     } else {
         Zeroizing::new(passphrase.to_vec())
     };
-    let _ = lock_memory(norm_pass.as_ptr(), norm_pass.len());
+    let _lock_norm_pass = MemoryLockGuard::try_lock(&norm_pass);
 
     let params = Params::new(m_kib, t, p, Some(KEY_LEN))
         .map_err(|e| OpkeError::Crypto(format!("Failed to initialize Argon2 params: {}", e)))?;
@@ -87,16 +90,15 @@ pub fn derive_key_and_split(
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
     let mut out_key = Zeroizing::new([0u8; KEY_LEN]);
-    let _ = lock_memory(out_key.as_ptr(), KEY_LEN);
 
     argon2
         .hash_password_into(&norm_pass, salt, &mut *out_key)
         .map_err(|e| OpkeError::Crypto(format!("Argon2id derivation failed: {}", e)))?;
 
+    let _lock_out_key = MemoryLockGuard::try_lock(&*out_key);
+
     let mut key_chacha = Zeroizing::new([0u8; SUBKEY_LEN]);
     let mut key_aes = Zeroizing::new([0u8; SUBKEY_LEN]);
-    let _ = lock_memory(key_chacha.as_ptr(), SUBKEY_LEN);
-    let _ = lock_memory(key_aes.as_ptr(), SUBKEY_LEN);
 
     key_chacha.copy_from_slice(&out_key[..SUBKEY_LEN]);
     key_aes.copy_from_slice(&out_key[SUBKEY_LEN..]);

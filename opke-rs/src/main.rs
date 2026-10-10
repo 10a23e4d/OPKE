@@ -20,11 +20,13 @@ fn main() {
         libc::prctl(libc::PR_SET_DUMPABLE, 0);
     }
 
-    // Register clean SIGINT/Ctrl+C handler to prevent dangling secrets (VULN-56)
-    let _ = ctrlc::set_handler(move || {
+    // Register clean SIGINT/Ctrl+C handler to prevent dangling secrets (VULN-56, VULN-83, VULN-116)
+    if let Err(e) = ctrlc::set_handler(move || {
         eprintln!("\n[!] 中断シグナル (Ctrl+C) を受信しました。終了します。");
         process::exit(130);
-    });
+    }) {
+        eprintln!("[!] Warning: Failed to set Ctrl+C signal handler: {}", e);
+    }
 
     // If launched without any command-line arguments (e.g. double-clicked from Explorer),
     // launch the interactive wizard mode.
