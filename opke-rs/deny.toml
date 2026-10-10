@@ -5,6 +5,7 @@ unmaintained = "none"
 yanked = "warn"
 
 [licenses]
+unused-allowed-license = "allow"
 allow = [
     "MIT",
     "Apache-2.0",
@@ -24,6 +25,14 @@ confidence-threshold = 0.8
 multiple-versions = "warn"
 wildcards = "warn"
 highlight = "all"
+
+[[bans.skip]]
+name = "miniz_oxide"
+version = "=0.8.9"
+
+[[bans.skip]]
+name = "syn"
+version = "=2.0.119"
 
 [sources]
 unknown-registry = "deny"
