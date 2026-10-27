@@ -35,7 +35,7 @@ pub fn execute(mut args: EncryptArgs) -> Result<(), OpkeError> {
     )?;
 
     if args.v2 {
-        eprintln!("[!] 警告: '--v2' は非推奨の旧バージョン互換フラグです。本番環境での使用は推奨されません。");
+        eprintln!("[!] Warning: '--v2' is a deprecated legacy compatibility flag. Not recommended for production use.");
     }
 
     // 1. Resolve and validate KDF parameters
@@ -247,21 +247,21 @@ pub fn execute(mut args: EncryptArgs) -> Result<(), OpkeError> {
             if p_out.exists() && !allow_overwrite {
                 if io::stdin().is_terminal() {
                     eprintln!(
-                        "[!] 警告: 出力先ファイル '{}' は既に存在します。",
+                        "[!] Warning: Destination file '{}' already exists.",
                         p_out.display()
                     );
-                    eprint!("上書きしますか？ (y/N): ");
+                    eprint!("Overwrite? (y/N): ");
                     let _ = io::stderr().flush();
                     let mut ans = String::new();
                     let _ = io::stdin().read_line(&mut ans);
                     if !ans.trim().eq_ignore_ascii_case("y") {
                         return Err(OpkeError::Validation(
-                            "既存ファイルの上書きがキャンセルされました。上書きを強制するには '--force' または '--overwrite' を指定してください。".into(),
+                            "Overwriting existing file canceled. Specify '--force' or '--overwrite' to allow overwriting.".into(),
                         ));
                     }
                 } else {
                     return Err(OpkeError::Validation(format!(
-                        "出力先ファイル '{}' は既に存在します。上書きするには '--force' または '--overwrite' を指定してください。",
+                        "Destination file '{}' already exists. Specify '--force' or '--overwrite' to overwrite.",
                         p_out.display()
                     )));
                 }
@@ -297,21 +297,21 @@ pub fn execute(mut args: EncryptArgs) -> Result<(), OpkeError> {
         if p_qr.exists() && !allow_overwrite {
             if io::stdin().is_terminal() {
                 eprintln!(
-                    "[!] 警告: QRコード保存先ファイル '{}' は既に存在します。",
+                    "[!] Warning: QR code destination file '{}' already exists.",
                     p_qr.display()
                 );
-                eprint!("上書きしますか？ (y/N): ");
+                eprint!("Overwrite? (y/N): ");
                 let _ = io::stderr().flush();
                 let mut ans = String::new();
                 let _ = io::stdin().read_line(&mut ans);
                 if !ans.trim().eq_ignore_ascii_case("y") {
                     return Err(OpkeError::Validation(
-                        "既存QRコードファイルの上書きがキャンセルされました。上書きを強制するには '--force' または '--overwrite' を指定してください。".into(),
+                        "Overwriting existing QR code file canceled. Specify '--force' or '--overwrite' to allow overwriting.".into(),
                     ));
                 }
             } else {
                 return Err(OpkeError::Validation(format!(
-                    "QRコード保存先ファイル '{}' は既に存在します。上書きするには '--force' または '--overwrite' を指定してください。",
+                    "QR code destination file '{}' already exists. Specify '--force' or '--overwrite' to overwrite.",
                     p_qr.display()
                 )));
             }

@@ -1,9 +1,9 @@
 [package]
 name = "opke"
-version = "3.1.0"
+version = "3.1.1"
 edition = "2021"
-authors = ["OPKE Contributors"]
-description = "Offline Paper-Key Encryptor (OPKE) v3.1.0"
+authors = ["10a23e4d"]
+description = "Offline Paper-Key Encryptor (OPKE) v3.1.1"
 license = "MIT OR Apache-2.0"
 
 [lib]

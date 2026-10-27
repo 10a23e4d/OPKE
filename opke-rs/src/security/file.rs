@@ -524,24 +524,23 @@ fn apply_windows_dacl(
     if !acl_applied {
         if io::stdin().is_terminal() {
             eprintln!(
-                "[!] 警告: 保存先ファイルシステムがWindowsアクセス制御（ACL）に対応していません。"
+                "[!] Warning: Destination filesystem does not support Windows Access Control Lists (ACLs)."
             );
-            eprintln!("[!] 他のユーザーがこのPCにログインしている場合、ファイルが閲覧される可能性があります。");
-            eprint!("続行しますか？ (y/N): ");
+            eprintln!("[!] If other users log into this machine, this file might be readable.");
+            eprint!("Proceed anyway? (y/N): ");
             let _ = io::stderr().flush();
             let mut ans = String::new();
             let _ = io::stdin().read_line(&mut ans);
             if !ans.trim().eq_ignore_ascii_case("y") {
                 return Err(OpkeError::Validation(
-                    "セキュリティ保護設定（ACL）の適用に失敗したため、書き込みを中止しました。"
-                        .into(),
+                    "Failed to apply file security permissions (ACL); write aborted.".into(),
                 ));
             }
         } else if force {
-            eprintln!("[!] 警告: 保存先ファイルシステムがWindowsアクセス制御（ACL）に対応していません。--force が指定されているため続行します。");
+            eprintln!("[!] Warning: Destination filesystem does not support Windows Access Control Lists (ACLs). Continuing because '--force' was specified.");
         } else {
             return Err(OpkeError::Validation(
-                "保存先ファイルシステムがWindowsアクセス制御（ACL）に対応していません。非対話実行で続行するには '--force' を指定してください。".into(),
+                "Destination filesystem does not support Windows Access Control Lists (ACLs). Specify '--force' to proceed in non-interactive mode.".into(),
             ));
         }
     }

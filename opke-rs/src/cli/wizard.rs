@@ -12,7 +12,7 @@ pub fn pause_for_exit() {
         return;
     }
     println!();
-    print!("[*] Enterキーを押すと終了します...");
+    print!("[*] Press Enter to exit...");
     let _ = io::stdout().flush();
     let mut line = String::new();
     let _ = io::stdin().read_line(&mut line);
@@ -26,9 +26,7 @@ pub fn prompt_line(prompt: &str) -> Result<String, OpkeError> {
     let mut line = String::new();
     let n = io::stdin().read_line(&mut line)?;
     if n == 0 {
-        return Err(OpkeError::Validation(
-            "標準入力の終端 (EOF) に達しました。".into(),
-        ));
+        return Err(OpkeError::Validation("End of input (EOF) reached.".into()));
     }
     let mut s = line.trim();
     while s.len() >= 2
@@ -63,14 +61,14 @@ fn prompt_destination_file(
         let p = std::path::Path::new(&path_str);
         if p.exists() {
             eprintln!(
-                "[!] 警告: 出力先ファイル '{}' は既に存在します。",
+                "[!] Warning: Destination file '{}' already exists.",
                 p.display()
             );
-            let ans = prompt_line("上書きしますか？ (y/N): ")?;
+            let ans = prompt_line("Overwrite? (y/N): ")?;
             if ans.eq_ignore_ascii_case("y") {
                 return Ok(Some(path_str));
             } else {
-                println!("[*] 別の出力ファイル名を指定してください。");
+                println!("[*] Please specify a different output file path.");
                 continue;
             }
         } else {
@@ -84,16 +82,16 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
         println!();
         println!("============================================================");
         println!("       OPKE v3.1 (Offline Paper-Key Encryptor)             ");
-        println!("       オフライン・ペーパーキー暗号化ツール                 ");
+        println!("       Offline Paper-Key Encryption Utility                 ");
         println!("============================================================");
-        println!(" [1] 秘密情報を暗号化 (Encrypt -> Paper Key / QR)");
-        println!(" [2] ペーパーキーを復号 (Decrypt -> Secret)");
-        println!(" [3] エンベロープ情報の確認 (Inspect Envelope)");
-        println!(" [4] 暗号化ベンチマーク (Benchmark)");
-        println!(" [5] 終了 (Exit)");
+        println!(" [1] Encrypt Secret (Encrypt -> Paper Key / QR)");
+        println!(" [2] Decrypt Paper Key (Decrypt -> Secret)");
+        println!(" [3] Inspect Envelope Metadata (Inspect Envelope)");
+        println!(" [4] Benchmark Hardware (Benchmark)");
+        println!(" [5] Exit");
         println!("============================================================");
 
-        let choice = match prompt_line("操作番号を選択してください [1-5]: ") {
+        let choice = match prompt_line("Select operation [1-5]: ") {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[-] {}", e);
@@ -104,13 +102,13 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
         match choice.as_str() {
             "1" => {
                 println!();
-                println!("--- [1] 秘密情報の暗号化ウィザード ---");
+                println!("--- [1] Encrypt Secret Wizard ---");
 
-                println!("プロファイルを選択してください:");
-                println!("  [1] production (推奨: 8 GiB, 64 iters - 最高強度)");
-                println!("  [2] moderate   (1 GiB, 16 iters - 標準)");
-                println!("  [3] fast       (64 MiB, 2 iters - テスト用)");
-                let prof_choice = prompt_line("プロファイル [1-3, デフォルト: 1]: ")?;
+                println!("Select KDF profile:");
+                println!("  [1] production (Recommended: 8 GiB, 64 iters - Maximum Strength)");
+                println!("  [2] moderate   (1 GiB, 16 iters - Standard)");
+                println!("  [3] fast       (64 MiB, 2 iters - Fast Testing)");
+                let prof_choice = prompt_line("Profile [1-3, default: 1]: ")?;
                 let profile = match prof_choice.as_str() {
                     "2" => "moderate",
                     "3" => "fast",
@@ -118,7 +116,7 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                 };
 
                 let in_file =
-                    prompt_line("秘密情報ファイルから読み込みますか？ (空欄で直接入力): ")?;
+                    prompt_line("Read secret from file? (Leave empty for direct entry): ")?;
                 let input_file = if in_file.is_empty() {
                     None
                 } else {
@@ -126,17 +124,16 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                 };
 
                 let output = prompt_destination_file(
-                    "ペーパーキー出力ファイル名 [デフォルト: paper_key.txt, 'skip'で画面出力]: ",
+                    "Paper key output file [default: paper_key.txt, 'skip' for console only]: ",
                     Some("paper_key.txt"),
                 )?;
 
                 let qr = prompt_destination_file(
-                    "QRコード画像保存ファイル名 [デフォルト: paper_key.png, 'skip'でスキップ]: ",
+                    "QR code image output file [default: paper_key.png, 'skip' to skip]: ",
                     Some("paper_key.png"),
                 )?;
 
-                let qr_term_ans =
-                    prompt_line("ターミナル画面上にもQRコードを表示しますか？ (Y/n): ")?;
+                let qr_term_ans = prompt_line("Display QR code in terminal? (Y/n): ")?;
                 let qr_term = !qr_term_ans.eq_ignore_ascii_case("n");
                 let overwrite = output
                     .as_ref()
@@ -164,16 +161,16 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                 };
 
                 if let Err(e) = cmd_encrypt::execute(args) {
-                    eprintln!("[-] エラーが発生しました: {}", e);
+                    eprintln!("[-] Encryption failed: {}", e);
                 } else {
-                    println!("[+] 暗号化が完了しました！");
+                    println!("[+] Encryption completed successfully!");
                 }
             }
             "2" => {
                 println!();
-                println!("--- [2] ペーパーキーの復号ウィザード ---");
+                println!("--- [2] Decrypt Paper Key Wizard ---");
 
-                let in_file = prompt_line("ペーパーキーファイル名 [デフォルト: paper_key.txt]: ")?;
+                let in_file = prompt_line("Paper key file path [default: paper_key.txt]: ")?;
                 let input_file = if in_file.is_empty() {
                     Some("paper_key.txt".to_string())
                 } else {
@@ -181,19 +178,19 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                 };
 
                 let output = prompt_destination_file(
-                    "復号平文の保存先ファイル名 (空欄で画面に直接表示): ",
+                    "Save decrypted plaintext to file (leave empty for console display): ",
                     None,
                 )?;
 
                 // Warn user about shoulder surfing before direct screen output
                 if output.is_none() {
                     println!(
-                        "[!] 警告: 保存先ファイルを指定しない場合、平文が画面に直接表示されます。"
+                        "[!] Warning: Without an output file, plaintext will be printed directly to the console."
                     );
-                    println!("    周囲に覗き見（ショルダーサーフィン）の恐れがないことを確認してください。");
-                    let confirm = prompt_line("画面表示を続行しますか？ (y/N): ")?;
+                    println!("    Please ensure no one is shoulder-surfing your screen.");
+                    let confirm = prompt_line("Proceed with console display? (y/N): ")?;
                     if !confirm.trim().eq_ignore_ascii_case("y") {
-                        println!("[-] 復号処理を中止しました。");
+                        println!("[-] Decryption canceled.");
                         continue;
                     }
                 }
@@ -216,16 +213,15 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                 };
 
                 if let Err(e) = cmd_decrypt::execute(args) {
-                    eprintln!("[-] 復号に失敗しました: {}", e);
+                    eprintln!("[-] Decryption failed: {}", e);
                 } else {
-                    println!("\n[+] 復号処理が完了しました！");
+                    println!("\n[+] Decryption completed successfully!");
                 }
             }
             "3" => {
                 println!();
-                println!("--- [3] エンベロープ情報の確認 ---");
-                let in_file =
-                    prompt_line("確認するペーパーキーファイル名 [デフォルト: paper_key.txt]: ")?;
+                println!("--- [3] Inspect Envelope Metadata ---");
+                let in_file = prompt_line("Paper key file to inspect [default: paper_key.txt]: ")?;
                 let input_file = if in_file.is_empty() {
                     Some("paper_key.txt".to_string())
                 } else {
@@ -238,17 +234,17 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                 };
 
                 if let Err(e) = cmd_inspect::execute(args) {
-                    eprintln!("[-] 読み込みエラー: {}", e);
+                    eprintln!("[-] Inspection error: {}", e);
                 }
             }
             "4" => {
                 println!();
-                println!("--- [4] 暗号化ベンチマーク ---");
-                println!("測定するプロファイルを選択してください:");
+                println!("--- [4] Hardware Benchmark ---");
+                println!("Select profile to benchmark:");
                 println!("  [1] production (8 GiB, 64 iters)");
                 println!("  [2] moderate   (1 GiB, 16 iters)");
                 println!("  [3] fast       (64 MiB, 2 iters)");
-                let prof_choice = prompt_line("プロファイル [1-3, デフォルト: 3 (テスト用)]: ")?;
+                let prof_choice = prompt_line("Profile [1-3, default: 3 (fast test)]: ")?;
                 let profile = match prof_choice.as_str() {
                     "1" => "production",
                     "2" => "moderate",
@@ -264,15 +260,15 @@ pub fn run_interactive_wizard() -> Result<(), OpkeError> {
                 };
 
                 if let Err(e) = cmd_benchmark::execute(args) {
-                    eprintln!("[-] ベンチマークエラー: {}", e);
+                    eprintln!("[-] Benchmark error: {}", e);
                 }
             }
             "5" | "q" | "exit" => {
-                println!("終了します。");
+                println!("Exiting.");
                 break;
             }
             _ => {
-                println!("[-] 無効な選択肢です。1から5の番号を入力してください。");
+                println!("[-] Invalid choice. Please enter a number between 1 and 5.");
             }
         }
     }

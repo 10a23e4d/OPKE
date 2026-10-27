@@ -1,12 +1,12 @@
 [English](README.md) | **日本語**
 
-# OPKE v3.1.0 (Offline Paper-Key Encryptor)
+# OPKE v3.1.1 (Offline Paper-Key Encryptor)
 
-**OPKE (Offline Paper-Key Encryptor) v3.1.0** は、VeraCryptの復号パスワードやパスワードマネージャー（1Password、Bitwarden等）のEmergency Kitなどの機密性の極めて高い平文データを、日常記憶しているパスワードから導出した暗号鍵を用いて**紙面印刷用のBase64（PEM形式）およびQRコード**として安全に出力・復元するオフライン暗号化ツールです。
+**OPKE (Offline Paper-Key Encryptor) v3.1.1** は、VeraCryptの復号パスワードやパスワードマネージャー（1Password、Bitwarden等）のEmergency Kitなどの機密性の極めて高い平文データを、日常記憶しているパスワードから導出した暗号鍵を用いて**紙面印刷用のBase64（PEM形式）およびQRコード**として安全に出力・復元するオフライン暗号化ツールです。
 
 v3.0以降では**Rust言語による完全ネイティブ実装（`opke-rs`）**となり、単一実行可能バイナリ（`.exe`）での配布、コンパイラ保証された完全なメモリ消去（`zeroize`）、物理メモリロック（`VirtualLock`/`mlock`によるスワップアウト防止）、ハードウェアアクセラレーション（AES-NI）、および**エクスプローラーからのダブルクリックでそのまま使える対話型ウィザード**に対応しました。
 
-v3.1.0では、KISS原則に基づく包括的リファクタリングにより、重複していたKDF検証の一元化、手書きJSON状態機械のserde_json委譲によるスリム化、ファイルI/OおよびOSセキュリティ層の適正化を行い、暗号学的互換性と多層防御CI検証を100%維持したまま保守性と可読性を回復しました。
+v3.1では、KISS原則に基づく包括的リファクタリングにより、重複していたKDF検証の一元化、手書きJSON状態機械のserde_json委譲によるスリム化、ファイルI/OおよびOSセキュリティ層の適正化を行い、暗号学的互換性と多層防御CI検証を100%維持したまま保守性と可読性を回復しました。
 
 ---
 
@@ -14,14 +14,14 @@ v3.1.0では、KISS原則に基づく包括的リファクタリングにより�
 
 ```text
 OPKE/
-├── opke-rs/              # OPKE v3.1.0 Rust ソースコード
+├── opke-rs/              # OPKE v3.1.1 Rust ソースコード
 │   ├── src/
 │   │   ├── core/         # 暗号コア (Argon2id + ChaCha20-Poly1305 + AES-256-GCM + AAD)
 │   │   ├── envelope/     # エンベロープ管理 (v2/v3対応, PEM形式, Base64事前検証)
 │   │   ├── security/     # メモリ保護 (VirtualLock, Zeroize), ACL制御, パスワード非表示入力
 │   │   ├── qr/           # QRコード生成 (PNG, SVG, 端末ANSIハイコントラスト表示)
 │   │   └── cli/          # CLIサブコマンド & ダブルクリック対応対話ウィザード
-│   ├── tests/            # 単体・統合・セキュリティ回帰テスト (計35テスト)
+│   ├── tests/            # 単体・統合・セキュリティ回帰テスト (計52テスト)
 │   └── Cargo.toml
 ├── LICENSE-MIT           # MIT License
 ├── LICENSE-APACHE        # Apache License 2.0
@@ -82,7 +82,7 @@ OPKE/
 ```
 
 > [!TIP]
-> **後方互換性とダウングレード防止**: OPKE v3.1.0 は旧 v2 エンベロープも解析可能ですが、暗号学的ダウングレード攻撃を防ぐため、v2 暗号文の復号には明示的な `--allow-v2` オプションの指定が必須となっています。
+> **後方互換性とダウングレード防止**: OPKE v3.1.1 は旧 v2 エンベロープも解析可能ですが、暗号学的ダウングレード攻撃を防ぐため、v2 暗号文の復号には明示的な `--allow-v2` オプションの指定が必須となっています。
 
 ---
 
@@ -94,20 +94,20 @@ Windowsエクスプローラーから `opke.exe` を直接ダブルクリック�
 ```text
 ============================================================
        OPKE v3.1 (Offline Paper-Key Encryptor)             
-       オフライン・ペーパーキー暗号化ツール                 
+       Offline Paper-Key Encryption Utility                 
 ============================================================
- [1] 秘密情報を暗号化 (Encrypt -> Paper Key / QR)
- [2] ペーパーキーを復号 (Decrypt -> Secret)
- [3] エンベロープ情報の確認 (Inspect Envelope)
- [4] 暗号化ベンチマーク (Benchmark)
- [5] 終了 (Exit)
+ [1] Encrypt Secret (Encrypt -> Paper Key / QR)
+ [2] Decrypt Paper Key (Decrypt -> Secret)
+ [3] Inspect Envelope Metadata (Inspect Envelope)
+ [4] Benchmark Hardware (Benchmark)
+ [5] Exit
 ============================================================
-操作番号を選択してください [1-5]:
+Select operation [1-5]:
 ```
 
-- 各ステップの案内に従って秘密平文やパスワードを入力できます。
+- プロンプト案内に従って操作番号（1: 暗号化, 2: 復号, 3: 情報確認, 4: ベンチマーク, 5: 終了）を選択します。
 - 復号結果を画面表示する際は、覗き見（ショルダーサーフィン）防止の確認警告が表示されます。
-- 処理終了時も「**Enterキーを押すと終了します**」で一時停止するため、画面が勝手に閉じることはありません。
+- 処理終了時も「**Press Enter to exit...**」で一時停止するため、画面が勝手に閉じることはありません。
 
 ---
 
@@ -173,7 +173,7 @@ cargo build --release
 ## 5. テスト実行 (Test)
 
 ```powershell
-# Rust版の全単体・統合・セキュリティ回帰テスト (計35件)
+# Rust版の全単体・統合・セキュリティ回帰テスト (計52件)
 cd opke-rs
 cargo test
 ```

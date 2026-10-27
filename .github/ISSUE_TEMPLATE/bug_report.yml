@@ -37,6 +37,6 @@ body:
     attributes:
       label: Environment
       description: OS version, architecture, and OPKE version.
-      placeholder: "e.g., Windows 11 x86_64 / OPKE v3.1.0"
+      placeholder: "e.g., Windows 11 x86_64 / OPKE v3.1.1"
     validations:
       required: true

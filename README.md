@@ -1,12 +1,12 @@
 **English** | [日本語](README_ja.md)
 
-# OPKE v3.1.0 (Offline Paper-Key Encryptor)
+# OPKE v3.1.1 (Offline Paper-Key Encryptor)
 
-**OPKE (Offline Paper-Key Encryptor) v3.1.0** is a standalone offline encryption tool designed to safeguard ultra-sensitive secrets—such as VeraCrypt master passwords, password manager emergency recovery kits (1Password, Bitwarden), and root seed keys—by converting them into **cold-storage paper keys (PEM format)** and **high-density QR codes** backed by memory-hard key derivation.
+**OPKE (Offline Paper-Key Encryptor) v3.1.1** is a standalone offline encryption tool designed to safeguard ultra-sensitive secrets—such as VeraCrypt master passwords, password manager emergency recovery kits (1Password, Bitwarden), and root seed keys—by converting them into **cold-storage paper keys (PEM format)** and **high-density QR codes** backed by memory-hard key derivation.
 
 Starting with v3.0, OPKE is completely natively implemented in **Rust (`opke-rs`)** as a zero-dependency standalone binary (`.exe`), featuring compiler-guaranteed memory zeroization (`zeroize`), kernel physical memory locking (`VirtualLock` on Windows / `mlock` on Unix to prevent swapping secrets to `pagefile.sys`), hardware-accelerated AES-NI, and an **interactive guided wizard for seamless double-click execution from Windows Explorer**.
 
-In v3.1.0, comprehensive refactoring based on the KISS principle streamlines the codebase, consolidating KDF validation, replacing handwritten JSON state machines with serde visitor deserialization, and optimizing OS security layers while preserving 100% cryptographic compatibility and multi-layered CI verification.
+In v3.1, comprehensive refactoring based on the KISS principle streamlines the codebase, consolidating KDF validation, replacing handwritten JSON state machines with serde visitor deserialization, and optimizing OS security layers while preserving 100% cryptographic compatibility and multi-layered CI verification.
 
 ---
 
@@ -14,14 +14,14 @@ In v3.1.0, comprehensive refactoring based on the KISS principle streamlines the
 
 ```text
 OPKE/
-├── opke-rs/              # OPKE v3.1.0 Rust source code
+├── opke-rs/              # OPKE v3.1.1 Rust source code
 │   ├── src/
 │   │   ├── core/         # Cryptographic engine (Argon2id + ChaCha20-Poly1305 + AES-256-GCM + AAD)
 │   │   ├── envelope/     # Envelope format (v2/v3 support, PEM encoding, Base64 pre-bounds)
 │   │   ├── security/     # OS security (VirtualLock, Zeroize, ACLs, hidden prompt, PEB scrub)
 │   │   ├── qr/           # QR code generation (PNG, SVG, high-contrast ANSI terminal rendering)
 │   │   └── cli/          # CLI subcommands & double-click interactive wizard
-│   ├── tests/            # Test suites: unit, crypto, and security regression (35 tests total)
+│   ├── tests/            # Test suites: unit, crypto, and security regression (52 tests total)
 │   └── Cargo.toml
 ├── LICENSE-MIT           # MIT License
 ├── LICENSE-APACHE        # Apache License 2.0
@@ -82,7 +82,7 @@ Applies nested AEAD ciphers with complementary mathematical foundations (stream 
 ```
 
 > [!TIP]
-> **Backward Compatibility & Downgrade Defense**: OPKE v3.1.0 can parse legacy v2 envelopes. However, to prevent cryptographic downgrade attacks, decrypting v2 envelopes requires an explicit `--allow-v2` command-line flag.
+> **Backward Compatibility & Downgrade Defense**: OPKE v3.1.1 can parse legacy v2 envelopes. However, to prevent cryptographic downgrade attacks, decrypting v2 envelopes requires an explicit `--allow-v2` command-line flag.
 
 ---
 
@@ -173,7 +173,7 @@ Compiled with Link-Time Optimization (`lto = true`), symbol stripping (`strip = 
 ## 5. Running Tests
 
 ```powershell
-# Executes full unit, cryptographic, and security regression test suites (35 tests)
+# Executes full unit, cryptographic, and security regression test suites (52 tests)
 cd opke-rs
 cargo test
 ```

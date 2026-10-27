@@ -50,5 +50,5 @@ Only the latest release is actively supported with security patches:
 
 | Version | Supported |
 | :--- | :--- |
-| `v3.0.x` (Latest) | :white_check_mark: |
-| `< v3.0.0` | :x: |
+| Latest stable release | :white_check_mark: |
+| Older releases | :x: |

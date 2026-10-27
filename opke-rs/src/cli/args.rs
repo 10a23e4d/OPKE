@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand};
 #[command(
     name = "opke",
     version = crate::VERSION,
-    about = "OPKE (Offline Paper-Key Encryptor) v3.0 - Offline Paper Cold Storage Key Encryptor",
+    about = "OPKE (Offline Paper-Key Encryptor) - Offline Paper Cold Storage Key Encryptor",
     long_about = "OPKE is an ultra-secure offline tool for encrypting VeraCrypt passwords, password manager emergency kits, and master keys using high-cost Argon2id KDF and dual AEAD cascade encryption (ChaCha20-Poly1305 + AES-256-GCM)."
 )]
 pub struct Cli {
