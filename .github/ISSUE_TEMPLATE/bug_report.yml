@@ -1,0 +1,42 @@
+name: Bug Report
+description: Report a reproducible bug or unexpected behavior in OPKE
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue!
+        Note: If this is a security vulnerability, please do NOT use this form; refer to [SECURITY.md](../../SECURITY.md) to report privately.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description of the Bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce & PoC
+      description: Minimal steps, command invocations, or reproducible inputs.
+      placeholder: |
+        1. Run `opke-rs ...`
+        2. Provide input `...`
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS version, architecture, and OPKE version.
+      placeholder: "e.g., Windows 11 x86_64 / OPKE v3.1.0"
+    validations:
+      required: true
