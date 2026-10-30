@@ -1,11 +1,66 @@
 //! Process memory and command line scrubbing utilities.
 
-#[cfg(windows)]
 use zeroize::Zeroizing;
 
 #[cfg(windows)]
 extern "system" {
     fn GetCommandLineW() -> *mut u16;
+}
+
+/// Zeroes all occurrences of non-empty `targets` within a mutable UTF-8 byte slice.
+pub fn scrub_utf8_slice(slice: &mut [u8], targets: &[&str]) {
+    for t in targets {
+        if t.is_empty() {
+            continue;
+        }
+        let needle = t.as_bytes();
+        let mut pos = 0;
+        while pos + needle.len() <= slice.len() {
+            if &slice[pos..pos + needle.len()] == needle {
+                for b in &mut slice[pos..pos + needle.len()] {
+                    *b = 0;
+                }
+                pos += needle.len();
+            } else {
+                pos += 1;
+            }
+        }
+    }
+}
+
+/// Zeroes all occurrences of non-empty `targets` within a null-terminated UTF-16 buffer.
+///
+/// # Safety
+/// `cmd_ptr` must be either null or point to a valid, mutable, null-terminated UTF-16 buffer.
+pub unsafe fn scrub_wide_cmdline_ptr(cmd_ptr: *mut u16, targets: &[&str]) {
+    if cmd_ptr.is_null() || targets.is_empty() {
+        return;
+    }
+    let mut len = 0usize;
+    while *cmd_ptr.add(len) != 0 {
+        len += 1;
+    }
+    if len == 0 {
+        return;
+    }
+    let slice = std::slice::from_raw_parts_mut(cmd_ptr, len);
+    for t in targets {
+        if t.is_empty() {
+            continue;
+        }
+        let needle: Zeroizing<Vec<u16>> = Zeroizing::new(t.encode_utf16().collect());
+        let mut pos = 0;
+        while pos + needle.len() <= slice.len() {
+            if &slice[pos..pos + needle.len()] == needle.as_slice() {
+                for ch in &mut slice[pos..pos + needle.len()] {
+                    *ch = 0;
+                }
+                pos += needle.len();
+            } else {
+                pos += 1;
+            }
+        }
+    }
 }
 
 /// Scrubs sensitive target strings from native process command line memory (Linux procfs and Windows PEB).
@@ -29,23 +84,7 @@ pub fn scrub_cmdline_targets(targets: &[&str]) {
                             let slice = unsafe {
                                 std::slice::from_raw_parts_mut(arg_start as *mut u8, len)
                             };
-                            for t in targets {
-                                if t.is_empty() {
-                                    continue;
-                                }
-                                let needle = t.as_bytes();
-                                let mut pos = 0;
-                                while pos + needle.len() <= slice.len() {
-                                    if &slice[pos..pos + needle.len()] == needle {
-                                        for b in &mut slice[pos..pos + needle.len()] {
-                                            *b = 0;
-                                        }
-                                        pos += needle.len();
-                                    } else {
-                                        pos += 1;
-                                    }
-                                }
-                            }
+                            scrub_utf8_slice(slice, targets);
                         }
                     }
                 }
@@ -61,32 +100,9 @@ pub fn scrub_cmdline_targets(targets: &[&str]) {
     #[cfg(windows)]
     {
         // Windows: GetCommandLineW() returns the mutable CommandLine.Buffer in PEB ProcessParameters
-        let cmd_ptr = unsafe { GetCommandLineW() };
-        if !cmd_ptr.is_null() {
-            let mut len = 0usize;
-            unsafe {
-                while *cmd_ptr.add(len) != 0 {
-                    len += 1;
-                }
-                let slice = std::slice::from_raw_parts_mut(cmd_ptr, len);
-                for t in targets {
-                    if t.is_empty() {
-                        continue;
-                    }
-                    let needle: Zeroizing<Vec<u16>> = Zeroizing::new(t.encode_utf16().collect());
-                    let mut pos = 0;
-                    while pos + needle.len() <= slice.len() {
-                        if &slice[pos..pos + needle.len()] == needle.as_slice() {
-                            for ch in &mut slice[pos..pos + needle.len()] {
-                                *ch = 0;
-                            }
-                            pos += needle.len();
-                        } else {
-                            pos += 1;
-                        }
-                    }
-                }
-            }
+        unsafe {
+            let cmd_ptr = GetCommandLineW();
+            scrub_wide_cmdline_ptr(cmd_ptr, targets);
         }
     }
 }

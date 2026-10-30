@@ -20,6 +20,20 @@ pub const MIN_CIPHERTEXT_BYTES: usize = 17; // 1-byte plaintext + 16-byte Poly13
 pub const MAX_SECRET_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 pub const MAX_CIPHERTEXT_BYTES: usize = MAX_SECRET_BYTES + TAG_LEN;
 
+/// Computes expected Layer 1 ciphertext / final ciphertext byte length from plaintext byte length.
+/// Returns `None` if `plaintext_len` is 0, exceeds `MAX_SECRET_BYTES`, or overflows `usize`.
+pub const fn compute_ciphertext_len(plaintext_len: usize) -> Option<usize> {
+    if plaintext_len == 0 || plaintext_len > MAX_SECRET_BYTES {
+        return None;
+    }
+    match plaintext_len.checked_add(TAG_LEN) {
+        Some(ct_len) if ct_len >= MIN_CIPHERTEXT_BYTES && ct_len <= MAX_CIPHERTEXT_BYTES => {
+            Some(ct_len)
+        }
+        _ => None,
+    }
+}
+
 /// Encrypts plaintext using dual AEAD cascade (ChaCha20-Poly1305 + AES-256-GCM) with optional AAD.
 ///
 /// Returns `(final_ciphertext, tag_aes, nonce_chacha, nonce_aes)`.
@@ -35,12 +49,12 @@ pub fn encrypt_cascade(
     if plaintext.is_empty() {
         return Err(OpkeError::Validation("Plaintext cannot be empty.".into()));
     }
-    if plaintext.len() > MAX_SECRET_BYTES {
-        return Err(OpkeError::Validation(format!(
+    let expected_ct_len = compute_ciphertext_len(plaintext.len()).ok_or_else(|| {
+        OpkeError::Validation(format!(
             "Plaintext exceeds maximum allowed size ({} bytes).",
             MAX_SECRET_BYTES
-        )));
-    }
+        ))
+    })?;
     if key_chacha.iter().all(|&b| b == 0) || key_aes.iter().all(|&b| b == 0) {
         return Err(OpkeError::Validation(
             "Subkeys must not be all-zero weak keys.".into(),
@@ -130,6 +144,7 @@ pub fn encrypt_cascade(
     }
 
     let ciphertext_len = l2_blob.len() - TAG_LEN;
+    debug_assert_eq!(ciphertext_len, expected_ct_len);
     let mut tag_aes = [0u8; TAG_LEN];
     tag_aes.copy_from_slice(&l2_blob[ciphertext_len..]);
     l2_blob[ciphertext_len..].zeroize();

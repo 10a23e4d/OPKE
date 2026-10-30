@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   audit:
-    name: Weekly Cargo Audit
+    name: Weekly Supply Chain & Advisory Audit
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -20,8 +20,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install cargo-audit prebuilt binary
-        uses: taiki-e/install-action@cargo-audit
+      - name: Install cargo-audit and cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
 
       - name: Run cargo audit
         run: cargo audit
+
+      - name: Run cargo deny check
+        run: cargo deny check

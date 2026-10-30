@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Build (${{ matrix.target }})
+    name: Build & Verify (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -44,14 +44,29 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Build optimized release binary
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Run test suite for target (${{ matrix.target }})
+        run: cargo test --locked --target ${{ matrix.target }}
 
-      - name: Prepare release asset & compute checksum
+      - name: Build optimized release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test release binary & prepare release asset
         shell: bash
         run: |
+          BIN_PATH="target/${{ matrix.target }}/release/${{ matrix.bin_name }}"
+          "$BIN_PATH" --version
+
+          SMOKE_DIR="./smoke_test_tmp"
+          rm -rf "$SMOKE_DIR" && mkdir -p "$SMOKE_DIR"
+          printf "OPKE-Release-Smoke-Test-Payload" > "$SMOKE_DIR/plain.txt"
+          OPKE_PASSPHRASE="SmokeTestPassphrase#2026" "$BIN_PATH" encrypt -i "$SMOKE_DIR/plain.txt" -o "$SMOKE_DIR/cipher.pem" --profile fast
+          "$BIN_PATH" inspect -i "$SMOKE_DIR/cipher.pem"
+          OPKE_PASSPHRASE="SmokeTestPassphrase#2026" "$BIN_PATH" decrypt -i "$SMOKE_DIR/cipher.pem" -o "$SMOKE_DIR/dec.txt"
+          cmp -s "$SMOKE_DIR/plain.txt" "$SMOKE_DIR/dec.txt"
+          rm -rf "$SMOKE_DIR"
+
           mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp target/${{ matrix.target }}/release/${{ matrix.bin_name }} "$GITHUB_WORKSPACE/dist/${{ matrix.asset_name }}"
+          cp "$BIN_PATH" "$GITHUB_WORKSPACE/dist/${{ matrix.asset_name }}"
           cd "$GITHUB_WORKSPACE/dist"
           sha256sum ${{ matrix.asset_name }} > ${{ matrix.asset_name }}.sha256
 

@@ -18,13 +18,58 @@ pub const MIN_P: u32 = 1;
 pub const MAX_P: u32 = 256;
 pub const MAX_PASSPHRASE_BYTES: usize = 4096;
 
-/// Validates Argon2id KDF parameters against strict system and algorithm bounds.
-pub fn validate_kdf_params(m_kib: u32, t: u32, p: u32) -> Result<(), OpkeError> {
-    let max_arch_kib = if usize::BITS <= 32 {
-        (u32::MAX / 1024).min(MAX_M_KIB)
+/// Returns architecture-aware maximum allowed Argon2 memory parameter in KiB.
+pub const fn max_arch_m_kib() -> u32 {
+    if usize::BITS <= 32 {
+        let limit = u32::MAX / 1024;
+        if limit < MAX_M_KIB {
+            limit
+        } else {
+            MAX_M_KIB
+        }
     } else {
         MAX_M_KIB
-    };
+    }
+}
+
+/// Pure predicate checking Argon2id KDF parameter bounds without heap allocations.
+/// Serves as the single source of truth for `validate_kdf_params` and Kani formal verification.
+pub const fn is_valid_kdf_params(m_kib: u32, t: u32, p: u32) -> bool {
+    let max_arch_kib = max_arch_m_kib();
+    if m_kib < MIN_M_KIB || m_kib > max_arch_kib {
+        return false;
+    }
+    if p < MIN_P || p > MAX_P {
+        return false;
+    }
+    if t < MIN_T || t > MAX_T {
+        return false;
+    }
+    match 8u32.checked_mul(p) {
+        Some(min_m) => m_kib >= min_m,
+        None => false,
+    }
+}
+
+/// Extracts two 32-byte subkeys from a 64-byte master key and verifies in constant time
+/// that the derived subkeys are non-identical.
+pub fn extract_distinct_subkeys(
+    master_key: &[u8; KEY_LEN],
+    key_chacha: &mut [u8; SUBKEY_LEN],
+    key_aes: &mut [u8; SUBKEY_LEN],
+) -> bool {
+    key_chacha.copy_from_slice(&master_key[..SUBKEY_LEN]);
+    key_aes.copy_from_slice(&master_key[SUBKEY_LEN..]);
+    !bool::from(key_chacha.as_slice().ct_eq(key_aes.as_slice()))
+}
+
+/// Validates Argon2id KDF parameters against strict system and algorithm bounds.
+/// Only returns `Ok(())` when `is_valid_kdf_params(m_kib, t, p)` holds.
+pub fn validate_kdf_params(m_kib: u32, t: u32, p: u32) -> Result<(), OpkeError> {
+    if is_valid_kdf_params(m_kib, t, p) {
+        return Ok(());
+    }
+    let max_arch_kib = max_arch_m_kib();
     if m_kib < MIN_M_KIB || m_kib > max_arch_kib {
         return Err(OpkeError::Validation(format!(
             "Invalid memory cost: {} KiB (range: {}-{})",
@@ -43,14 +88,11 @@ pub fn validate_kdf_params(m_kib: u32, t: u32, p: u32) -> Result<(), OpkeError> 
             t, MIN_T, MAX_T
         )));
     }
-    if m_kib < 8 * p {
-        return Err(OpkeError::Validation(format!(
-            "Invalid memory cost: {} KiB (Argon2 requires m >= 8 * p = {} KiB)",
-            m_kib,
-            8 * p
-        )));
-    }
-    Ok(())
+    Err(OpkeError::Validation(format!(
+        "Invalid memory cost: {} KiB (Argon2 requires m >= 8 * p = {} KiB)",
+        m_kib,
+        8u64 * (p as u64)
+    )))
 }
 
 /// Derives a 64-byte key using Argon2id (v0x13) and splits it into two 32-byte keys.
@@ -113,11 +155,8 @@ pub fn derive_key_and_split(
     let mut key_chacha = Zeroizing::new([0u8; SUBKEY_LEN]);
     let mut key_aes = Zeroizing::new([0u8; SUBKEY_LEN]);
 
-    key_chacha.copy_from_slice(&out_key[..SUBKEY_LEN]);
-    key_aes.copy_from_slice(&out_key[SUBKEY_LEN..]);
-
-    // Ensure subkeys are not degenerate identical
-    if bool::from(key_chacha.as_slice().ct_eq(key_aes.as_slice())) {
+    // Ensure subkeys are extracted and not degenerate identical
+    if !extract_distinct_subkeys(&out_key, &mut key_chacha, &mut key_aes) {
         return Err(OpkeError::Crypto(
             "Argon2id derived degenerate identical subkeys.".into(),
         ));

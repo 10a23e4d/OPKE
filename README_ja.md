@@ -1,8 +1,8 @@
 [English](README.md) | **日本語**
 
-# OPKE v3.1.1 (Offline Paper-Key Encryptor)
+# OPKE v3.1.2 (Offline Paper-Key Encryptor)
 
-**OPKE (Offline Paper-Key Encryptor) v3.1.1** は、VeraCryptの復号パスワードやパスワードマネージャー（1Password、Bitwarden等）のEmergency Kitなどの機密性の極めて高い平文データを、日常記憶しているパスワードから導出した暗号鍵を用いて**紙面印刷用のBase64（PEM形式）およびQRコード**として安全に出力・復元するオフライン暗号化ツールです。
+**OPKE (Offline Paper-Key Encryptor) v3.1.2** は、VeraCryptの復号パスワードやパスワードマネージャー（1Password、Bitwarden等）のEmergency Kitなどの機密性の極めて高い平文データを、日常記憶しているパスワードから導出した暗号鍵を用いて**紙面印刷用のBase64（PEM形式）およびQRコード**として安全に出力・復元するオフライン暗号化ツールです。
 
 v3.0以降では**Rust言語による完全ネイティブ実装（`opke-rs`）**となり、単一実行可能バイナリ（`.exe`）での配布、コンパイラ保証された完全なメモリ消去（`zeroize`）、物理メモリロック（`VirtualLock`/`mlock`によるスワップアウト防止）、ハードウェアアクセラレーション（AES-NI）、および**エクスプローラーからのダブルクリックでそのまま使える対話型ウィザード**に対応しました。
 
@@ -14,7 +14,7 @@ v3.1では、KISS原則に基づく包括的リファクタリングにより、
 
 ```text
 OPKE/
-├── opke-rs/              # OPKE v3.1.1 Rust ソースコード
+├── opke-rs/              # OPKE v3.1.2 Rust ソースコード
 │   ├── src/
 │   │   ├── core/         # 暗号コア (Argon2id + ChaCha20-Poly1305 + AES-256-GCM + AAD)
 │   │   ├── envelope/     # エンベロープ管理 (v2/v3対応, PEM形式, Base64事前検証)
@@ -82,7 +82,7 @@ OPKE/
 ```
 
 > [!TIP]
-> **後方互換性とダウングレード防止**: OPKE v3.1.1 は旧 v2 エンベロープも解析可能ですが、暗号学的ダウングレード攻撃を防ぐため、v2 暗号文の復号には明示的な `--allow-v2` オプションの指定が必須となっています。
+> **後方互換性とダウングレード防止**: OPKE v3.1.2 は旧 v2 エンベロープも解析可能ですが、暗号学的ダウングレード攻撃を防ぐため、v2 暗号文の復号には明示的な `--allow-v2` オプションの指定が必須となっています。
 
 ---
 

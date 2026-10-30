@@ -5,12 +5,13 @@ pub mod kdf;
 pub mod profiles;
 
 pub use cascade::{
-    decrypt_cascade, encrypt_cascade, MAX_CIPHERTEXT_BYTES, MAX_SECRET_BYTES, MIN_CIPHERTEXT_BYTES,
-    NONCE_LEN, SUBKEY_LEN, TAG_LEN,
+    compute_ciphertext_len, decrypt_cascade, encrypt_cascade, MAX_CIPHERTEXT_BYTES,
+    MAX_SECRET_BYTES, MIN_CIPHERTEXT_BYTES, NONCE_LEN, SUBKEY_LEN, TAG_LEN,
 };
 pub use kdf::{
-    derive_key_and_split, validate_kdf_params, KEY_LEN, MAX_M_KIB, MAX_P, MAX_PASSPHRASE_BYTES,
-    MAX_T, MIN_M_KIB, MIN_P, MIN_T, SALT_LEN,
+    derive_key_and_split, extract_distinct_subkeys, is_valid_kdf_params, max_arch_m_kib,
+    validate_kdf_params, KEY_LEN, MAX_M_KIB, MAX_P, MAX_PASSPHRASE_BYTES, MAX_T, MIN_M_KIB, MIN_P,
+    MIN_T, SALT_LEN,
 };
 pub use profiles::{
     get_profile, KdfProfile, PROFILE_FAST, PROFILE_MODERATE, PROFILE_PRODUCTION, PROFILE_STANDARD,

@@ -12,6 +12,75 @@ extern "system" {
     fn SetEnvironmentVariableW(lpName: *const u16, lpValue: *const u16) -> i32;
 }
 
+/// Zeroes `OPKE_PASSPHRASE=<val>` and `<val>` occurrences inside a mutable UTF-8 environment slice.
+pub fn scrub_utf8_env_slice(slice: &mut [u8], val: &str) {
+    let targets = [
+        Zeroizing::new(format!("OPKE_PASSPHRASE={}", val).into_bytes()),
+        Zeroizing::new(val.as_bytes().to_vec()),
+    ];
+    for needle in &targets {
+        if needle.is_empty() {
+            continue;
+        }
+        let mut pos = 0;
+        while pos + needle.len() <= slice.len() {
+            if &slice[pos..pos + needle.len()] == needle.as_slice() {
+                for b in &mut slice[pos..pos + needle.len()] {
+                    *b = 0;
+                }
+                pos += needle.len();
+            } else {
+                pos += 1;
+            }
+        }
+    }
+}
+
+/// Zeroes `OPKE_PASSPHRASE=<val>` and `<val>` occurrences inside a double-null-terminated
+/// UTF-16 Windows environment block.
+///
+/// # Safety
+/// `env_ptr` must be either null or point to a valid, mutable, double-null-terminated UTF-16 environment block.
+pub unsafe fn scrub_wide_env_block(env_ptr: *mut u16, val: &str) {
+    if env_ptr.is_null() {
+        return;
+    }
+    let targets = [
+        Zeroizing::new(format!("OPKE_PASSPHRASE={}", val)),
+        Zeroizing::new(val.to_string()),
+    ];
+    let needles: [Zeroizing<Vec<u16>>; 2] = [
+        Zeroizing::new(targets[0].encode_utf16().collect()),
+        Zeroizing::new(targets[1].encode_utf16().collect()),
+    ];
+
+    let mut curr = env_ptr;
+    while *curr != 0 {
+        let mut len = 0usize;
+        while *curr.add(len) != 0 {
+            len += 1;
+        }
+        let slice = std::slice::from_raw_parts_mut(curr, len);
+        for needle in &needles {
+            if needle.is_empty() {
+                continue;
+            }
+            let mut pos = 0;
+            while pos + needle.len() <= slice.len() {
+                if &slice[pos..pos + needle.len()] == needle.as_slice() {
+                    for ch in &mut slice[pos..pos + needle.len()] {
+                        *ch = 0;
+                    }
+                    pos += needle.len();
+                } else {
+                    pos += 1;
+                }
+            }
+        }
+        curr = curr.add(len + 1);
+    }
+}
+
 /// Retrieves and immediately scrubs `OPKE_PASSPHRASE` from environment, libc, and procfs/PEB memory.
 pub fn scrub_env_passphrase() -> Result<Option<Zeroizing<String>>, OpkeError> {
     if let Ok(raw_val) = std::env::var("OPKE_PASSPHRASE") {
@@ -38,28 +107,7 @@ pub fn scrub_env_passphrase() -> Result<Option<Zeroizing<String>>, OpkeError> {
                                 let slice = unsafe {
                                     std::slice::from_raw_parts_mut(env_start as *mut u8, len)
                                 };
-                                let targets = [
-                                    Zeroizing::new(
-                                        format!("OPKE_PASSPHRASE={}", *val).into_bytes(),
-                                    ),
-                                    Zeroizing::new(val.as_bytes().to_vec()),
-                                ];
-                                for needle in &targets {
-                                    if needle.is_empty() {
-                                        continue;
-                                    }
-                                    let mut pos = 0;
-                                    while pos + needle.len() <= slice.len() {
-                                        if &slice[pos..pos + needle.len()] == needle.as_slice() {
-                                            for b in &mut slice[pos..pos + needle.len()] {
-                                                *b = 0;
-                                            }
-                                            pos += needle.len();
-                                        } else {
-                                            pos += 1;
-                                        }
-                                    }
-                                }
+                                scrub_utf8_env_slice(slice, &val);
                             }
                         }
                     }
@@ -93,37 +141,7 @@ pub fn scrub_env_passphrase() -> Result<Option<Zeroizing<String>>, OpkeError> {
                 // BEFORE deleting it with SetEnvironmentVariableW (which unlinks and frees without zeroizing)
                 let env_ptr = GetEnvironmentStringsW();
                 if !env_ptr.is_null() {
-                    let mut curr = env_ptr;
-                    while *curr != 0 {
-                        let mut len = 0usize;
-                        while *curr.add(len) != 0 {
-                            len += 1;
-                        }
-                        let slice = std::slice::from_raw_parts_mut(curr, len);
-                        let targets = [
-                            Zeroizing::new(format!("OPKE_PASSPHRASE={}", *val)),
-                            Zeroizing::new((*val).clone()),
-                        ];
-                        for target in &targets {
-                            if target.is_empty() {
-                                continue;
-                            }
-                            let needle: Zeroizing<Vec<u16>> =
-                                Zeroizing::new(target.encode_utf16().collect());
-                            let mut pos = 0;
-                            while pos + needle.len() <= slice.len() {
-                                if &slice[pos..pos + needle.len()] == needle.as_slice() {
-                                    for ch in &mut slice[pos..pos + needle.len()] {
-                                        *ch = 0;
-                                    }
-                                    pos += needle.len();
-                                } else {
-                                    pos += 1;
-                                }
-                            }
-                        }
-                        curr = curr.add(len + 1);
-                    }
+                    scrub_wide_env_block(env_ptr, &val);
                     FreeEnvironmentStringsW(env_ptr);
                 }
 

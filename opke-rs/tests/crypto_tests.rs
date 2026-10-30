@@ -1,6 +1,8 @@
 use opke::core::{decrypt_cascade, derive_key_and_split, encrypt_cascade};
 use opke::envelope::{create_envelope, deserialize_envelope, serialize_envelope};
 use opke::qr::generate_qr_image;
+use opke::security::env::{scrub_utf8_env_slice, scrub_wide_env_block};
+use opke::security::proc::{scrub_utf8_slice, scrub_wide_cmdline_ptr};
 use tempfile::NamedTempFile;
 
 #[test]
@@ -136,6 +138,67 @@ fn test_invalid_envelope_rejected() {
     // Unsupported version (e.g. v4)
     let v4_json = r#"{"v": 4, "kdf": {"name": "argon2id", "m_kib": 65536, "t": 2, "p": 2, "salt": "AAAA"}, "cipher": {"layers": ["chacha20-poly1305", "aes-256-gcm"], "nonce_chacha": "AAAA", "nonce_aes": "BBBB", "tag_aes": "CCCC"}, "data": "DDDD"}"#;
     assert!(deserialize_envelope(v4_json).is_err());
+}
+
+#[test]
+fn test_memory_scrubbing_utf8_and_utf16_pointers() {
+    // 1. UTF-8 cmdline slice scrubbing
+    let mut cmd_utf8 = b"opke\0encrypt\0--passphrase=SuperSecretKey99\0--out=a.txt\0".to_vec();
+    scrub_utf8_slice(&mut cmd_utf8, &["", "SuperSecretKey99"]);
+    assert!(!cmd_utf8
+        .windows(b"SuperSecretKey99".len())
+        .any(|w| w == b"SuperSecretKey99"));
+    assert!(cmd_utf8
+        .windows(b"--out=a.txt".len())
+        .any(|w| w == b"--out=a.txt"));
+
+    // 2. Wide UTF-16 null-terminated pointer scrubbing (exercised under Miri)
+    let mut wide_cmd: Vec<u16> = "opke.exe encrypt --secret MyUnicode秘密Key --force"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let needle_wide: Vec<u16> = "MyUnicode秘密Key".encode_utf16().collect();
+    unsafe {
+        scrub_wide_cmdline_ptr(std::ptr::null_mut(), &["MyUnicode秘密Key"]);
+        scrub_wide_cmdline_ptr(wide_cmd.as_mut_ptr(), &["", "MyUnicode秘密Key"]);
+    }
+    assert!(!wide_cmd
+        .windows(needle_wide.len())
+        .any(|w| w == needle_wide.as_slice()));
+
+    // 3. UTF-8 environment slice scrubbing
+    let mut env_utf8 = b"PATH=/usr/bin\0OPKE_PASSPHRASE=EnvPass777\0HOME=/root\0".to_vec();
+    scrub_utf8_env_slice(&mut env_utf8, "EnvPass777");
+    assert!(!env_utf8
+        .windows(b"EnvPass777".len())
+        .any(|w| w == b"EnvPass777"));
+    assert!(env_utf8
+        .windows(b"HOME=/root".len())
+        .any(|w| w == b"HOME=/root"));
+
+    // 4. Wide UTF-16 double-null-terminated environment block scrubbing (exercised under Miri)
+    let mut wide_env: Vec<u16> = Vec::new();
+    for entry in [
+        "PATH=C:\\Windows",
+        "OPKE_PASSPHRASE=WideEnvSecret🔑",
+        "USER=alice",
+    ] {
+        wide_env.extend(entry.encode_utf16());
+        wide_env.push(0);
+    }
+    wide_env.push(0); // Double null terminator
+    let wide_secret: Vec<u16> = "WideEnvSecret🔑".encode_utf16().collect();
+    let wide_user: Vec<u16> = "USER=alice".encode_utf16().collect();
+    unsafe {
+        scrub_wide_env_block(std::ptr::null_mut(), "WideEnvSecret🔑");
+        scrub_wide_env_block(wide_env.as_mut_ptr(), "WideEnvSecret🔑");
+    }
+    assert!(!wide_env
+        .windows(wide_secret.len())
+        .any(|w| w == wide_secret.as_slice()));
+    assert!(wide_env
+        .windows(wide_user.len())
+        .any(|w| w == wide_user.as_slice()));
 }
 
 #[test]

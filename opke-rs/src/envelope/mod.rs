@@ -4,7 +4,7 @@ pub mod model;
 pub mod pem;
 
 pub use model::{CipherParams, KdfParams, OPKEEnvelope};
-pub use pem::{strip_pem, to_paper_format, PEM_FOOTER, PEM_HEADER};
+pub use pem::{compute_pem_capacity, strip_pem, to_paper_format, PEM_FOOTER, PEM_HEADER};
 
 use base64::prelude::*;
 use subtle::ConstantTimeEq;
@@ -17,6 +17,15 @@ use crate::error::OpkeError;
 
 pub const CURRENT_VERSION: u32 = 3;
 pub const MAX_ENVELOPE_CHARS: usize = 100 * 1024 * 1024; // 100 MiB max envelope chars
+
+/// Computes the maximum Base64 encoded string length for a given raw byte limit.
+/// Returns `None` if arithmetic overflows `usize`.
+pub const fn max_b64_len_for_bytes(max_bytes: usize) -> Option<usize> {
+    match max_bytes.div_ceil(3).checked_mul(4) {
+        Some(v) => v.checked_add(4),
+        None => None,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct DecodedEnvelopeBytes {
@@ -86,7 +95,8 @@ impl OPKEEnvelope {
 
         let tag_aes = decode_b64_field::<TAG_LEN>(&self.cipher.tag_aes, "tag_aes", "Tag_AES", 24)?;
 
-        let max_b64_len = MAX_CIPHERTEXT_BYTES.div_ceil(3) * 4 + 4;
+        let max_b64_len = max_b64_len_for_bytes(MAX_CIPHERTEXT_BYTES)
+            .expect("MAX_CIPHERTEXT_BYTES Base64 bound fits in usize");
         if self.data.len() > max_b64_len {
             return Err(OpkeError::Envelope(format!(
                 "Ciphertext data exceeds maximum allowed size ({} bytes).",

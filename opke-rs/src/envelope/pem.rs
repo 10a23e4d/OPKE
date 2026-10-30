@@ -5,6 +5,24 @@ use crate::error::OpkeError;
 pub const PEM_HEADER: &str = "-----BEGIN OPKE ENVELOPE-----";
 pub const PEM_FOOTER: &str = "-----END OPKE ENVELOPE-----";
 
+/// Computes exact buffer capacity required for a PEM-encoded envelope payload.
+/// Returns `None` if `line_length` is outside `[16, 1024]` or if arithmetic overflows `usize`.
+pub const fn compute_pem_capacity(b64_len: usize, line_length: usize) -> Option<usize> {
+    if line_length < 16 || line_length > 1024 {
+        return None;
+    }
+    let num_lines = if b64_len == 0 {
+        0
+    } else {
+        b64_len.div_ceil(line_length)
+    };
+    let base = PEM_HEADER.len() + 1 + PEM_FOOTER.len() + 1;
+    match base.checked_add(b64_len) {
+        Some(v) => v.checked_add(num_lines),
+        None => None,
+    }
+}
+
 /// Wraps Base64 payload in paper-friendly PEM header/footer with 64-character lines.
 pub fn to_paper_format(b64_payload: &str, line_length: usize) -> Result<String, OpkeError> {
     if !(16..=1024).contains(&line_length) {
@@ -20,12 +38,8 @@ pub fn to_paper_format(b64_payload: &str, line_length: usize) -> Result<String, 
         ));
     }
 
-    let num_lines = if b64_payload.is_empty() {
-        0
-    } else {
-        b64_payload.len().div_ceil(line_length)
-    };
-    let cap = PEM_HEADER.len() + 1 + b64_payload.len() + num_lines + PEM_FOOTER.len() + 1;
+    let cap = compute_pem_capacity(b64_payload.len(), line_length)
+        .ok_or_else(|| OpkeError::Validation("PEM capacity calculation overflowed.".into()))?;
     let mut output = String::with_capacity(cap);
     output.push_str(PEM_HEADER);
     output.push('\n');
